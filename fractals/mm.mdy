@@ -1,0 +1,22 @@
+---
+mm: 1.2
+kind: app
+name: fractals 
+option: buildable-host no
+use: mm.gfx
+use: mm.display
+use: mm.mcu
+file: main.cpp
+file: mandelbrot.cpp
+file: sierpinski.cpp
+---
+
+# fractals 
+
+mendelbrot fractal 
+sierpinski fractal 
+
+A picture made of nothing but mm.gfx's primitives. 
+
+The application uses mm.gfx, mm.display, and mm.mcu. 
+It has no font, board, SDK, or vendor dependency.
