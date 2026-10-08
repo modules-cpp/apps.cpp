@@ -37,3 +37,15 @@ The interpreter and game have a standalone host test. From `CHIP-8/`, run:
 ```sh
 ../scripts/test.sh
 ```
+
+The suite uses `mm.test`, named cases, and a `kind: test` manifest, following
+modules.cpp tests. Set `MM_MODULES` to the built installation whose host
+compiler configuration should be used. The runner creates a temporary project
+because the test tool does not yet support external test roots, then invokes
+`out/bin/test --host`. Compiler errors and failed expectations fail the command.
+Use `../scripts/test.sh --compile-only` to compile without running.
+
+The temporary test project is configured independently for a debug host build,
+using the installation's host C and C++ compilers. Target SDK and board settings
+are not copied, so configuring the installation for Linux SDL or Pico does not
+introduce target manifest paths into the host tests.
