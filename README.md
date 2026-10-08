@@ -20,8 +20,9 @@ file. A local `.env` file is not loaded automatically.
 
 ## Build all applications
 
-The root `mm.mdy` connects CHIP-8, FileCommander, fractals, and kalkulator.
-From this repository's root, configure and build all four for Linux SDL:
+The root `mm.mdy` connects CHIP-8, FileCommander, clockal, fractals, and
+kalkulator. From this repository's root, configure and build all five for
+Linux SDL:
 
 ```sh
 ./scripts/configure-linux.sh
@@ -32,6 +33,8 @@ The shared configuration is `out/config.mdy`; executables are under
 `out-target-*/<app-directory>/`. Run an individual app from its directory.
 For FileCommander, use `./scripts/run-filecommander-linux.sh` from the root,
 which keeps its Linux files in `FileCommander/data/`.
+Clockal reads `mm.rtc` for its seven-segment clock and date. See
+`clockal/README.md` for the supported Pico board and RTC trust behavior.
 
 ## Build and run fractals on Linux
 

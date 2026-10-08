@@ -1,0 +1,31 @@
+#!/bin/bash
+# Set Clockal's PCF85063 RTC from the host's current UTC system clock.
+set -euo pipefail
+
+if [[ $# -ne 1 || ! -c $1 ]]; then
+    echo "usage: $0 /dev/ttyACM0" >&2
+    echo "Pass the USB serial device of the running Clockal board." >&2
+    exit 64
+fi
+port=$1
+exec 3<>"$port"
+stty -F "$port" 115200 raw -echo -ixon -ixoff
+
+printf 'TDSET 1 HELLO\n' >&3
+if ! IFS= read -r -t 5 -u 3 answer || [[ $answer != 'TDSET 1 READY' ]]; then
+    echo "tdset: no Clockal response from $port" >&2
+    exit 1
+fi
+
+# Sample immediately before sending, rather than freezing the time at build time.
+timestamp=$(LC_ALL=C date -u '+%Y-%m-%dT%H:%M:%SZ')
+printf 'TDSET 1 %s\n' "$timestamp" >&3
+if ! IFS= read -r -t 5 -u 3 answer; then
+    echo "tdset: timed out waiting for RTC confirmation" >&2
+    exit 1
+fi
+if [[ $answer != 'TDSET 1 OK' ]]; then
+    echo "tdset: RTC write failed: $answer" >&2
+    exit 1
+fi
+printf 'RTC set to %s (UTC)\n' "$timestamp"
