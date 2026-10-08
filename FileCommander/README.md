@@ -25,6 +25,17 @@ in the list header to switch to green phosphor; tap GREEN > to switch back.
 The selected row and on-screen buttons follow the chosen theme. Monochrome
 displays show the same interface in black and white.
 
+Tap INFO > beside the status line for the volume information pages. PREV and
+NEXT show capacity, available space, and the backing flash geometry and
+LittleFS settings on Pico; REFRESH rereads the live values. Cache, lookahead,
+and block-cycle values are the current Pico provider's fixed configuration.
+LittleFS free space
+is an estimate based on allocated flash blocks, not a count of writable file
+bytes. The page explicitly marks per-block wear counts and on-disk revision as
+unavailable because the public storage API does not report them. On Linux,
+capacity and available space refer to the host file system containing the
+FileCommander data directory, not the size of that directory.
+
 The on-screen keyboard enters uppercase letters, digits, period, hyphen,
 underscore and space. The underlying file API supports longer names, but this
 first UI edits up to 24 characters. Deleting a nonempty folder fails safely.

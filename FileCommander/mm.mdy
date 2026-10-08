@@ -19,4 +19,5 @@ file: files.cpp
 Touch file manager for the board's local storage. On Pico the local provider is
 littlefs on the reserved internal flash region; on Linux it is the configured
 local directory. The user can navigate, create empty files and folders,
-rename, delete with confirmation, preview text, and append text.
+rename, delete with confirmation, view files as text or hex, and inspect
+volume information.

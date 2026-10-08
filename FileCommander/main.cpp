@@ -56,7 +56,7 @@ struct Layout {
     unsigned int keyboard_y() const { return height - 168u; }
 };
 
-enum class Mode { List, View, Edit, DeleteConfirm, FormatConfirm };
+enum class Mode { List, View, Info, Edit, DeleteConfirm, FormatConfirm };
 enum class Edit { NewFile, NewDir, Rename, Append };
 enum class Theme { Amber, Green };
 enum class ViewFormat { Ascii, Hex };
@@ -77,8 +77,33 @@ struct State {
     std::array<std::uint64_t, 64> view_offsets{};
     unsigned int view_page = 0;
     unsigned int view_pages = 1;
+    unsigned int info_page = 0;
+    mm::fs::Space volume_space{};
+    mm::fs::Status volume_status = mm::fs::Status::NotFound;
+    mm::mcu::FlashRegionGeometry flash_geometry{};
+    mm::mcu::Status flash_status = mm::mcu::Status::Unsupported;
     mm::fs::Status mount_error = mm::fs::Status::Ok;
 };
+
+bool littlefs_volume(const State& state) {
+    return state.volume_status == mm::fs::Status::Ok &&
+           state.flash_status == mm::mcu::Status::Ok &&
+           state.flash_geometry.erase_size != 0 &&
+           state.volume_space.total == state.flash_geometry.size;
+}
+
+void refresh_info(State& state) {
+    state.volume_space = {};
+    state.flash_geometry = {};
+    state.volume_status = filecommander::ready() ?
+        mm::fs::space("/data", state.volume_space) : state.mount_error;
+#if defined(__linux__)
+    // A Linux flash geometry query can create an unrelated mapped image file.
+    state.flash_status = mm::mcu::Status::Unsupported;
+#else
+    state.flash_status = mm::mcu::flash_region_geometry(state.flash_geometry);
+#endif
+}
 
 const char* error_text(mm::fs::Status status) {
     using mm::fs::Status;
@@ -149,13 +174,16 @@ bool render_list(Surface frame, const Layout& layout, const State& state) {
         static_cast<unsigned int>(theme_name.size()) * mm::fonts::kMono12.advance;
     const unsigned int tree_x = layout.width - 4u -
         static_cast<unsigned int>(tree_name.size()) * mm::fonts::kMono12.advance;
+    const unsigned int info_x = layout.width - 4u - 6u * mm::fonts::kMono12.advance;
     if (!label(frame, "FILE COMMANDER", 4, 4) ||
         !label(frame, theme_name, theme_x, 4) ||
         !box(frame, 2, 19, layout.width - 4u, 1, true) ||
         !label(frame, filecommander::path(), 4, 24) ||
         !box(frame, tree_x - 3u, 23, layout.width - tree_x + 1u, 16, false) ||
         !label(frame, tree_name, tree_x, 24) ||
-        !label(frame, state.message, 4, 43)) return false;
+        !label(frame, state.message, 4, 43) ||
+        !box(frame, info_x - 3u, 42, layout.width - info_x + 1u, 16, false) ||
+        !label(frame, "INFO >", info_x, 43)) return false;
     if (!filecommander::ready()) {
         if (!label(frame, "Storage is unavailable", 6, 82) ||
             !label(frame, error_text(state.mount_error), 6, 104)) return false;
@@ -284,6 +312,92 @@ bool render_view(Surface frame, const Layout& layout, const State& state) {
            button(frame, layout, 1, 2, "DELETE");
 }
 
+bool info_text(Surface frame, unsigned int row, std::string_view value) {
+    return label(frame, value, 5, 26u + row * 15u);
+}
+
+bool info_number(Surface frame, unsigned int row, std::string_view title,
+                 std::uint64_t value, std::string_view suffix = {}) {
+    std::array<char, 48> line{};
+    std::size_t length = 0;
+    for (char ch : title) line[length++] = ch;
+    const std::size_t start = length;
+    do {
+        line[length++] = static_cast<char>('0' + value % 10u);
+        value /= 10u;
+    } while (value != 0);
+    for (std::size_t left = start, right = length - 1u; left < right; ++left, --right) {
+        const char temporary = line[left];
+        line[left] = line[right];
+        line[right] = temporary;
+    }
+    for (char ch : suffix) line[length++] = ch;
+    return info_text(frame, row, {line.data(), length});
+}
+
+bool render_info(Surface frame, const Layout& layout, const State& state) {
+    const bool littlefs = littlefs_volume(state);
+    const auto& geometry = state.flash_geometry;
+    const auto& space = state.volume_space;
+    const auto board = mm::mcu::board().name;
+    if (!label(frame, state.info_page == 0 ? "VOLUME INFO 1/3" :
+                      state.info_page == 1 ? "STORAGE GEOMETRY 2/3" :
+                                             "DETAILS 3/3", 5, 4) ||
+        !box(frame, 3, 19, layout.width - 6u, 1, true)) return false;
+    if (state.info_page == 0) {
+        if (!info_text(frame, 0, "Mount: /data") ||
+            !info_text(frame, 1, board.empty() ? "Board: unspecified" : board) ||
+            !info_text(frame, 2, filecommander::ready() ? "State: mounted" :
+                       error_text(state.mount_error)) ||
+            !info_text(frame, 3, littlefs ? "Backend: LittleFS" :
+                       "Backend: local volume") ||
+            !info_text(frame, 4, "Access: read/write")) return false;
+        if (state.volume_status == mm::fs::Status::Ok) {
+            const std::uint64_t used = space.total >= space.free ?
+                space.total - space.free : 0;
+            if (!info_number(frame, 5, "Capacity: ", space.total, " B") ||
+                !info_number(frame, 6, littlefs ? "Free est: " : "Available: ",
+                             space.free, " B") ||
+                !info_number(frame, 7, littlefs ? "Allocated: " : "Disk used: ",
+                             used, " B") ||
+                !info_text(frame, 8, littlefs ? "Used = allocated blocks" :
+                           "Host disk, not folder")) return false;
+        } else if (!info_text(frame, 5, "Space: unavailable") ||
+                   !info_text(frame, 6, error_text(state.volume_status))) return false;
+    } else if (state.info_page == 1) {
+        if (!littlefs) {
+            if (!info_text(frame, 0, "No LittleFS geometry") ||
+                !info_text(frame, 1, "for this local volume") ||
+                !info_text(frame, 3, "Flash region absent or") ||
+                !info_text(frame, 4, "not this volume")) return false;
+        } else if (!info_number(frame, 0, "Flash region: ", geometry.size, " B") ||
+                   !info_number(frame, 1, "Read unit: ", geometry.read_size, " B") ||
+                   !info_number(frame, 2, "Program unit: ", geometry.program_size, " B") ||
+                   !info_number(frame, 3, "Erase/block: ", geometry.erase_size, " B") ||
+                   !info_number(frame, 4, "Block count: ",
+                                geometry.size / geometry.erase_size) ||
+                   !info_number(frame, 5, "Cache: ", geometry.program_size, " B") ||
+                   !info_text(frame, 6, "Lookahead: 32 B") ||
+                   !info_text(frame, 7, "Block cycles: 500") ||
+                   !info_number(frame, 8, "Max name: ", mm::fs::max_name, " B")) return false;
+    } else {
+        if (!info_text(frame, 0, littlefs ? "Pico LittleFS provider" :
+                                     "Local volume provider") ||
+            !info_text(frame, 1, littlefs ? "Free = block estimate" :
+                                     "Space = host disk") ||
+            !info_text(frame, 2, "File bytes may differ") ||
+            !info_text(frame, 3, "Wear counts: unavailable") ||
+            !info_text(frame, 4, "On-disk rev: unavailable") ||
+            !info_number(frame, 5, "Max path: ", mm::fs::max_path, " B") ||
+            !info_text(frame, 6, "Format: confirm only") ||
+            !info_text(frame, 7, "REFRESH rereads space")) return false;
+    }
+    return button(frame, layout, 0, 0, "BACK") &&
+           button(frame, layout, 0, 1, "PREV", state.info_page != 0) &&
+           button(frame, layout, 0, 2, "NEXT", state.info_page != 2) &&
+           button(frame, layout, 0, 3, "REFRESH");
+}
+
 constexpr std::array<std::string_view, 4> key_rows{
     "QWERTYUIOP", "ASDFGHJKL.", "ZXCVBNM-_ ", "0123456789"
 };
@@ -335,6 +449,7 @@ bool draw(mm::display::Display& display, const Layout& layout, const State& stat
     if (mm::gfx::fill(frame, mm::display::Color::White) != Status::Ok) return false;
     const bool rendered = state.mode == Mode::List ? render_list(frame, layout, state) :
                           state.mode == Mode::View ? render_view(frame, layout, state) :
+                          state.mode == Mode::Info ? render_info(frame, layout, state) :
                           state.mode == Mode::Edit ? render_edit(frame, layout, state) :
                           render_confirm(frame, layout, state);
     if (!rendered) return false;
@@ -435,6 +550,22 @@ void action(State& state, const Layout& layout, unsigned int x, unsigned int y) 
         state.page = 0;
         state.selected = 0;
         reload(state);
+        return;
+    }
+    if (state.mode == Mode::List && y < 59u) {
+        state.info_page = 0;
+        refresh_info(state);
+        state.mode = Mode::Info;
+        return;
+    }
+    if (state.mode == Mode::Info) {
+        if (y >= layout.toolbar_y() && y < layout.toolbar_y() + 33u) {
+            const unsigned int column = x * 4u / layout.width;
+            if (column == 0) state.mode = Mode::List;
+            else if (column == 1 && state.info_page != 0) --state.info_page;
+            else if (column == 2 && state.info_page != 2) ++state.info_page;
+            else if (column == 3) refresh_info(state);
+        }
         return;
     }
     if (state.mode == Mode::Edit) {
