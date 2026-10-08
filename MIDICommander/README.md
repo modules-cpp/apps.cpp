@@ -7,6 +7,16 @@ an SD card on the Waveshare RP2350-Touch-LCD-2.8. It reads LittleFS at `/data`
 double-tap the row. Directories can be opened the same way; **UP**, **PREV**,
 and **NEXT** navigate. **STOP** ends playback.
 
+If **TO SD** fails, the status line now reports the filesystem result. “SD
+needs FAT16/32” means the card was reached but no supported FAT volume was
+found (for example, an exFAT-formatted card); “SD card I/O error” means the
+card or SDIO transfer could not be read. “SD card init timeout” means card
+identification did not finish; “SD FAT mount timeout” means the first card
+identification worked but FAT mounting subsequently timed out. Source
+switching leaves the current browser path intact on failure. Insert the card
+before tapping **TO SD** again
+to retry a failed mount.
+
 The player supports Standard MIDI File format 0 and 1, up to 32 tracks, a
 positive ticks-per-quarter-note division, running status, tempo changes,
 polyphonic note on/off, and sustain pedal messages. It accepts `.mid` and

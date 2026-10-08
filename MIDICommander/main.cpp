@@ -83,22 +83,63 @@ public:
             set_root(true);
         } else {
             set_root(false);
+            last_source_sd_ = true;
+            last_source_status_ = sd_status_;
             return false;
         }
-        return refresh();
+        if (refresh()) return true;
+        if (!on_sd_ && sd_) {
+            set_root(true);
+            if (refresh()) return true;
+        }
+        last_source_sd_ = on_sd_;
+        last_source_status_ = directory_status_;
+        return false;
     }
 
     [[nodiscard]] bool switch_source() {
+        const bool target_sd = !on_sd_;
+        last_source_sd_ = target_sd;
         if (!on_sd_) {
             if (!sd_) mount_sd();
-            if (!sd_) return false;
-            set_root(true);
+            if (!sd_) {
+                last_source_status_ = sd_status_;
+                return false;
+            }
         } else {
             if (!local_) mount_local();
-            if (!local_) return false;
-            set_root(false);
+            if (!local_) {
+                last_source_status_ = local_status_;
+                return false;
+            }
         }
-        return refresh();
+        const auto old_path = path_;
+        const auto old_offset = offset_;
+        set_root(target_sd);
+        if (refresh()) {
+            last_source_status_ = mm::fs::Status::Ok;
+            return true;
+        }
+        last_source_status_ = directory_status_;
+        on_sd_ = !target_sd;
+        path_ = old_path;
+        offset_ = old_offset;
+        (void)refresh();
+        return false;
+    }
+
+    [[nodiscard]] const char* source_error() const {
+        if (!last_source_sd_) return "LittleFS unavailable";
+        switch (last_source_status_) {
+            case mm::fs::Status::Corrupt: return "SD needs FAT16/32";
+            case mm::fs::Status::TransportError: return "SD card I/O error";
+            case mm::fs::Status::Timeout:
+                return sd_card_ready_ ? "SD FAT mount timeout" : "SD card init timeout";
+            case mm::fs::Status::Busy: return "SDIO bus busy";
+            case mm::fs::Status::Unsupported: return "SD unsupported";
+            case mm::fs::Status::NotFound: return "SD card not found";
+            default: return "SD source unavailable";
+        }
     }
 
     [[nodiscard]] bool refresh() {
@@ -106,7 +147,8 @@ public:
         more_ = false;
         selected_ = -1;
         mm::fs::Directory directory;
-        if (mm::fs::open_directory(path_.data(), directory) != mm::fs::Status::Ok)
+        directory_status_ = mm::fs::open_directory(path_.data(), directory);
+        if (directory_status_ != mm::fs::Status::Ok)
             return false;
         std::array<char, mm::fs::max_name + 1> name{};
         unsigned int position = 0;
@@ -115,7 +157,10 @@ public:
             mm::fs::Stat stat{};
             bool done = false;
             const auto result = directory.next(name, length, stat, done);
-            if (result != mm::fs::Status::Ok) return false;
+            if (result != mm::fs::Status::Ok) {
+                directory_status_ = result;
+                return false;
+            }
             if (done) break;
             if (length == 0 || name[0] == '.') continue;
             if (stat.kind != mm::fs::Kind::Directory &&
@@ -130,7 +175,8 @@ public:
             entry.directory = stat.kind == mm::fs::Kind::Directory;
             ++shown_;
         }
-        return directory.close() == mm::fs::Status::Ok;
+        directory_status_ = directory.close();
+        return directory_status_ == mm::fs::Status::Ok;
     }
 
     [[nodiscard]] bool next_page() {
@@ -177,6 +223,7 @@ private:
     void mount_local() {
         if (local_) return;
         const auto local_status = mm::fs::local::mount("/data", {false, true});
+        local_status_ = local_status;
         if (local_status == mm::fs::Status::Ok || local_status == mm::fs::Status::Exists) {
             local_ = true;
             seed_bundled_music_if_needed();
@@ -203,8 +250,13 @@ private:
     }
     void mount_sd() {
         if (sd_) return;
-        const auto result = mm::fs::fat::mount("/sd", mm::sdcard::socket::card(),
-                                               {.read_only = true});
+        auto& card = mm::sdcard::socket::card();
+        mm::fs::BlockGeometry geometry{};
+        sd_status_ = card.geometry(geometry);
+        sd_card_ready_ = sd_status_ == mm::fs::Status::Ok;
+        if (!sd_card_ready_) return;
+        const auto result = mm::fs::fat::mount("/sd", card, {.read_only = true});
+        sd_status_ = result;
         sd_ = result == mm::fs::Status::Ok;
     }
     void set_root(bool sd) {
@@ -232,7 +284,13 @@ private:
     bool more_ = false;
     bool local_ = false;
     bool sd_ = false;
+    bool sd_card_ready_ = false;
     bool on_sd_ = false;
+    bool last_source_sd_ = true;
+    mm::fs::Status local_status_ = mm::fs::Status::NotFound;
+    mm::fs::Status sd_status_ = mm::fs::Status::NotFound;
+    mm::fs::Status directory_status_ = mm::fs::Status::NotFound;
+    mm::fs::Status last_source_status_ = mm::fs::Status::NotFound;
 };
 
 [[nodiscard]] bool text(Surface frame, const char* value, unsigned int x,
@@ -361,7 +419,7 @@ int main() {
 
     const char* status = "Select a MIDI file";
     if (!storage_ok) {
-        status = "No storage / insert SD";
+        status = browser.source_error();
     } else if (!audio_ok) {
         status = midicommander::error();
     }
@@ -428,7 +486,7 @@ int main() {
             } else if (last_y >= 38 && last_y < 67 &&
                        last_x >= panel_geometry.width - 71) {
                 status = browser.switch_source() ? "Source changed" :
-                                                    "Source unavailable";
+                                                    browser.source_error();
                 (void)draw(display, panel_geometry.width, panel_geometry.height,
                            browser, status, false, playing_name);
             } else if (last_y >= 73 && last_y < 73 + page_size * 25) {
