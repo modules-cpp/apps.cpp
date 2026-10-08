@@ -14,7 +14,9 @@ constexpr std::size_t maximum_entries = 8;
 constexpr std::size_t maximum_path = mm::fs::max_path;
 struct Entry {
     std::array<char, mm::fs::max_name + 1> name{};
+    std::array<char, maximum_path + 1> path{};
     bool directory = false;
+    unsigned int depth = 0;
     std::uint64_t size = 0;
 };
 std::array<Entry, maximum_entries> entries{};
@@ -22,6 +24,13 @@ std::array<char, maximum_path + 1> current{ '/', 'd', 'a', 't', 'a', '\0' };
 unsigned int listed = 0;
 bool more = false;
 bool mounted = false;
+constexpr unsigned int maximum_tree_depth = 8;
+
+struct TreeFrame {
+    std::array<char, maximum_path + 1> path{};
+    unsigned int next = 0;
+    unsigned int depth = 0;
+};
 
 bool valid_name(std::string_view name) {
     if (name.empty() || name.size() > mm::fs::max_name ||
@@ -46,7 +55,75 @@ mm::fs::Status child_path(std::string_view name, std::array<char, maximum_path +
 mm::fs::Status existing(unsigned int index,
                         std::array<char, maximum_path + 1>& out) {
     if (index >= listed) return mm::fs::Status::BadArgument;
-    return child_path(entries[index].name.data(), out);
+    out = entries[index].path;
+    return mm::fs::Status::Ok;
+}
+
+mm::fs::Status join_path(std::string_view parent, std::string_view name,
+                         std::array<char, maximum_path + 1>& out) {
+    if (!valid_name(name)) return mm::fs::Status::BadArgument;
+    const std::size_t length = parent.size() + 1 + name.size();
+    if (length > maximum_path) return mm::fs::Status::NameTooLong;
+    std::memcpy(out.data(), parent.data(), parent.size());
+    out[parent.size()] = '/';
+    std::memcpy(out.data() + parent.size() + 1, name.data(), name.size());
+    out[length] = 0;
+    return mm::fs::Status::Ok;
+}
+
+void save_entry(unsigned int slot, std::string_view name,
+                const std::array<char, maximum_path + 1>& path,
+                const mm::fs::Stat& stat, unsigned int depth) {
+    auto& entry = entries[slot];
+    std::memcpy(entry.name.data(), name.data(), name.size());
+    entry.name[name.size()] = 0;
+    entry.path = path;
+    entry.directory = stat.kind == mm::fs::Kind::Directory;
+    entry.size = stat.size;
+    entry.depth = depth;
+}
+
+mm::fs::Status refresh_tree(unsigned int offset, unsigned int limit) {
+    std::array<TreeFrame, maximum_tree_depth + 1> stack{};
+    stack[0].path = current;
+    unsigned int level = 0;
+    unsigned int position = 0;
+    for (;;) {
+        auto& frame = stack[level];
+        mm::fs::Directory dir;
+        auto status = mm::fs::open_directory(frame.path.data(), dir);
+        if (status != mm::fs::Status::Ok) return status;
+        std::array<char, mm::fs::max_name + 1> filename{};
+        std::size_t length = 0;
+        mm::fs::Stat stat{};
+        bool done = false;
+        for (unsigned int i = 0; i <= frame.next; ++i) {
+            status = dir.next(filename, length, stat, done);
+            if (status != mm::fs::Status::Ok || done) break;
+        }
+        const auto closed = dir.close();
+        if (status != mm::fs::Status::Ok) return status;
+        if (closed != mm::fs::Status::Ok) return closed;
+        if (done) {
+            if (level == 0) return mm::fs::Status::Ok;
+            --level;
+            continue;
+        }
+        ++frame.next;
+        std::array<char, maximum_path + 1> path{};
+        status = join_path(frame.path.data(), {filename.data(), length}, path);
+        if (status != mm::fs::Status::Ok) return status;
+        if (position++ >= offset) {
+            if (listed == limit) { more = true; return mm::fs::Status::Ok; }
+            save_entry(listed++, {filename.data(), length}, path, stat, frame.depth);
+        }
+        if (stat.kind == mm::fs::Kind::Directory && level < maximum_tree_depth) {
+            ++level;
+            stack[level] = {};
+            stack[level].path = path;
+            stack[level].depth = frame.depth + 1;
+        }
+    }
 }
 }
 
@@ -71,12 +148,14 @@ bool has_more() { return more; }
 const char* name(unsigned int index) { return index < listed ? entries[index].name.data() : ""; }
 bool directory(unsigned int index) { return index < listed && entries[index].directory; }
 std::uint64_t size(unsigned int index) { return index < listed ? entries[index].size : 0; }
+unsigned int depth(unsigned int index) { return index < listed ? entries[index].depth : 0; }
 
-mm::fs::Status refresh(unsigned int offset, unsigned int limit) {
+mm::fs::Status refresh(unsigned int offset, unsigned int limit, bool tree) {
     listed = 0;
     more = false;
     if (!mounted) return mm::fs::Status::NotFound;
     if (limit == 0 || limit > maximum_entries) return mm::fs::Status::BadArgument;
+    if (tree) return refresh_tree(offset, limit);
     mm::fs::Directory dir;
     auto status = mm::fs::open_directory(current.data(), dir);
     if (status != mm::fs::Status::Ok) return status;
@@ -89,11 +168,10 @@ mm::fs::Status refresh(unsigned int offset, unsigned int limit) {
         if (status != mm::fs::Status::Ok || done) break;
         if (position < offset) continue;
         if (listed == limit) { more = true; break; }
-        auto& entry = entries[listed++];
-        std::memcpy(entry.name.data(), filename.data(), length);
-        entry.name[length] = 0;
-        entry.directory = stat.kind == mm::fs::Kind::Directory;
-        entry.size = stat.size;
+        std::array<char, maximum_path + 1> path{};
+        status = child_path({filename.data(), length}, path);
+        if (status != mm::fs::Status::Ok) break;
+        save_entry(listed++, {filename.data(), length}, path, stat, 0);
     }
     const auto closed = dir.close();
     if (status != mm::fs::Status::Ok) return status;
@@ -133,7 +211,10 @@ mm::fs::Status rename(unsigned int index, std::string_view new_name) {
     std::array<char, maximum_path + 1> from{}, to{};
     auto status = existing(index, from);
     if (status != mm::fs::Status::Ok) return status;
-    status = child_path(new_name, to);
+    const char* separator = std::strrchr(from.data(), '/');
+    if (separator == nullptr) return mm::fs::Status::BadArgument;
+    status = join_path({from.data(), static_cast<std::size_t>(separator - from.data())},
+                       new_name, to);
     return status == mm::fs::Status::Ok ? mm::fs::rename(from.data(), to.data()) : status;
 }
 
@@ -143,7 +224,7 @@ mm::fs::Status remove(unsigned int index) {
     return status == mm::fs::Status::Ok ? mm::fs::remove(child.data()) : status;
 }
 
-mm::fs::Status read(unsigned int index, std::span<std::byte> output,
+mm::fs::Status read(unsigned int index, std::uint64_t offset, std::span<std::byte> output,
                     std::size_t& count) {
     if (directory(index)) return mm::fs::Status::IsDirectory;
     std::array<char, maximum_path + 1> child{};
@@ -153,7 +234,8 @@ mm::fs::Status read(unsigned int index, std::span<std::byte> output,
     status = mm::fs::open(child.data(), mm::fs::Access::Read,
                           mm::fs::Disposition::OpenExisting, file);
     if (status != mm::fs::Status::Ok) return status;
-    status = file.read(output, count);
+    status = file.seek(offset);
+    if (status == mm::fs::Status::Ok) status = file.read(output, count);
     const auto closed = file.close();
     return status == mm::fs::Status::Ok ? closed : status;
 }

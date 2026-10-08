@@ -22,13 +22,14 @@ bool has_more();
 const char* name(unsigned int);
 bool directory(unsigned int);
 std::uint64_t size(unsigned int);
-mm::fs::Status refresh(unsigned int, unsigned int);
+unsigned int depth(unsigned int);
+mm::fs::Status refresh(unsigned int, unsigned int, bool);
 mm::fs::Status enter(unsigned int);
 mm::fs::Status up();
 mm::fs::Status create(std::string_view, bool);
 mm::fs::Status rename(unsigned int, std::string_view);
 mm::fs::Status remove(unsigned int);
-mm::fs::Status read(unsigned int, std::span<std::byte>, std::size_t&);
+mm::fs::Status read(unsigned int, std::uint64_t, std::span<std::byte>, std::size_t&);
 mm::fs::Status append(unsigned int, std::string_view);
 }
 
@@ -58,11 +59,14 @@ struct Layout {
 enum class Mode { List, View, Edit, DeleteConfirm, FormatConfirm };
 enum class Edit { NewFile, NewDir, Rename, Append };
 enum class Theme { Amber, Green };
+enum class ViewFormat { Ascii, Hex };
 
 struct State {
     Mode mode = Mode::List;
     Edit edit = Edit::NewFile;
     Theme theme = Theme::Amber;
+    ViewFormat view_format = ViewFormat::Ascii;
+    bool tree = false;
     unsigned int page = 0;
     unsigned int selected = 0;
     unsigned int rows = 0;
@@ -70,6 +74,9 @@ struct State {
     unsigned int input_size = 0;
     const char* message = "";
     std::size_t preview_size = 0;
+    std::array<std::uint64_t, 64> view_offsets{};
+    unsigned int view_page = 0;
+    unsigned int view_pages = 1;
     mm::fs::Status mount_error = mm::fs::Status::Ok;
 };
 
@@ -137,12 +144,17 @@ bool button(Surface frame, const Layout& layout, unsigned int row,
 
 bool render_list(Surface frame, const Layout& layout, const State& state) {
     const std::string_view theme_name = state.theme == Theme::Amber ? "AMBER >" : "GREEN >";
+    const std::string_view tree_name = state.tree ? "TREE >" : "LIST >";
     const unsigned int theme_x = layout.width - 4u -
         static_cast<unsigned int>(theme_name.size()) * mm::fonts::kMono12.advance;
+    const unsigned int tree_x = layout.width - 4u -
+        static_cast<unsigned int>(tree_name.size()) * mm::fonts::kMono12.advance;
     if (!label(frame, "FILE COMMANDER", 4, 4) ||
         !label(frame, theme_name, theme_x, 4) ||
         !box(frame, 2, 19, layout.width - 4u, 1, true) ||
         !label(frame, filecommander::path(), 4, 24) ||
+        !box(frame, tree_x - 3u, 23, layout.width - tree_x + 1u, 16, false) ||
+        !label(frame, tree_name, tree_x, 24) ||
         !label(frame, state.message, 4, 43)) return false;
     if (!filecommander::ready()) {
         if (!label(frame, "Storage is unavailable", 6, 82) ||
@@ -159,9 +171,13 @@ bool render_list(Surface frame, const Layout& layout, const State& state) {
         const bool selected = state.selected == i;
         if (selected && !box(frame, 2, y - 2, layout.width - 4u,
                              row_height - 1u, true)) return false;
+        const unsigned int depth = state.tree ? filecommander::depth(i) : 0u;
+        const unsigned int indent = depth * 14u;
+        if (depth != 0u && !label(frame, "|-", 5u + indent - 14u, y, selected))
+            return false;
         if (!label(frame, filecommander::directory(i) ? "[D]" : "[F]",
-                   5, y, selected) ||
-            !label(frame, filecommander::name(i), 36, y, selected)) return false;
+                   5u + indent, y, selected) ||
+            !label(frame, filecommander::name(i), 36u + indent, y, selected)) return false;
     }
     return button(frame, layout, 0, 0, "PREV", state.page != 0) &&
            button(frame, layout, 0, 1, "NEXT", filecommander::has_more()) &&
@@ -173,31 +189,99 @@ bool render_list(Surface frame, const Layout& layout, const State& state) {
            button(frame, layout, 1, 3, "DELETE", filecommander::count() != 0);
 }
 
-bool render_view(Surface frame, const Layout& layout, const State& state) {
-    if (!label(frame, filecommander::name(state.selected), 4, 5) ||
-        !label(frame, "First 512 bytes", 4, 27) ||
-        !label(frame, state.message, 4, 47)) return false;
+unsigned int view_lines(const Layout& layout) {
+    unsigned int lines = 0;
+    for (unsigned int y = 67; y + 17u < layout.toolbar_y(); y += 18u) ++lines;
+    return lines;
+}
+
+std::size_t visible_ascii_bytes(const Layout& layout, const State& state) {
     const unsigned int columns = (layout.width - 10u) / mm::fonts::kMono12.advance;
-    const unsigned int bottom = layout.toolbar_y();
-    unsigned int x = 5, y = 67, column = 0;
-    for (std::size_t i = 0; i < state.preview_size && y + 17u < bottom; ++i) {
-        const unsigned char ch = static_cast<unsigned char>(preview[i]);
+    const unsigned int lines = view_lines(layout);
+    unsigned int line = 0, column = 0;
+    for (std::size_t i = 0; i < state.preview_size; ++i) {
+        const auto ch = static_cast<unsigned char>(preview[i]);
         if (ch == '\r') continue;
-        if (ch == '\n' || column == columns) {
-            y += 18u;
-            x = 5;
+        if (ch == '\n') {
+            if (++line == lines) return i + 1u;
             column = 0;
-            if (ch == '\n' || y + 17u >= bottom) continue;
+            continue;
         }
-        const char printable = ch >= 32 && ch < 127 ? static_cast<char>(ch) : '.';
-        if (!label(frame, {&printable, 1}, x, y)) return false;
-        x += mm::fonts::kMono12.advance;
+        if (column == columns) {
+            if (++line == lines) return i;
+            column = 0;
+        }
         ++column;
     }
+    return state.preview_size;
+}
+
+unsigned int hex_width(const Layout& layout) { return layout.width < 320u ? 4u : 8u; }
+
+std::size_t visible_bytes(const Layout& layout, const State& state) {
+    if (state.view_format == ViewFormat::Ascii) return visible_ascii_bytes(layout, state);
+    const std::size_t capacity = view_lines(layout) * hex_width(layout);
+    return state.preview_size < capacity ? state.preview_size : capacity;
+}
+
+char hex_digit(unsigned int value) {
+    return "0123456789ABCDEF"[value & 15u];
+}
+
+bool render_view(Surface frame, const Layout& layout, const State& state) {
+    if (!label(frame, filecommander::name(state.selected), 4, 5) ||
+        !label(frame, state.view_format == ViewFormat::Ascii ? "ASCII TEXT" : "HEX DUMP", 4, 27) ||
+        !label(frame, state.message, 4, 47)) return false;
+    const auto start = state.view_offsets[state.view_page];
+    if (state.view_format == ViewFormat::Ascii) {
+        const unsigned int columns = (layout.width - 10u) / mm::fonts::kMono12.advance;
+        unsigned int x = 5, y = 67, column = 0;
+        const auto count = visible_ascii_bytes(layout, state);
+        for (std::size_t i = 0; i < count; ++i) {
+            const unsigned char ch = static_cast<unsigned char>(preview[i]);
+            if (ch == '\r') continue;
+            if (ch == '\n') { y += 18u; x = 5; column = 0; continue; }
+            if (column == columns) { y += 18u; x = 5; column = 0; }
+            const char printable = ch >= 32 && ch < 127 ? static_cast<char>(ch) : '.';
+            if (!label(frame, {&printable, 1}, x, y)) return false;
+            x += mm::fonts::kMono12.advance;
+            ++column;
+        }
+    } else {
+        const unsigned int width = hex_width(layout);
+        const auto count = visible_bytes(layout, state);
+        for (std::size_t i = 0; i < count; i += width) {
+            std::array<char, 48> line{};
+            const auto offset = start + i;
+            for (unsigned int digit = 0; digit < 8; ++digit)
+                line[digit] = hex_digit(static_cast<unsigned int>(offset >> ((7u - digit) * 4u)));
+            line[8] = ':'; line[9] = ' ';
+            unsigned int cursor = 10;
+            for (unsigned int j = 0; j < width; ++j) {
+                if (i + j < count) {
+                    const auto byte = static_cast<unsigned char>(preview[i + j]);
+                    line[cursor++] = hex_digit(byte >> 4u);
+                    line[cursor++] = hex_digit(byte);
+                } else { line[cursor++] = ' '; line[cursor++] = ' '; }
+                line[cursor++] = ' ';
+            }
+            line[cursor++] = ' ';
+            for (unsigned int j = 0; j < width && i + j < count; ++j) {
+                const auto byte = static_cast<unsigned char>(preview[i + j]);
+                line[cursor++] = byte >= 32 && byte < 127 ? static_cast<char>(byte) : '.';
+            }
+            if (!label(frame, {line.data(), cursor}, 5, 67u +
+                       static_cast<unsigned int>(i / width) * 18u)) return false;
+        }
+    }
     return button(frame, layout, 0, 0, "BACK") &&
-           button(frame, layout, 0, 1, "APPEND") &&
-           button(frame, layout, 0, 2, "RENAME") &&
-           button(frame, layout, 0, 3, "DELETE");
+           button(frame, layout, 0, 1, "PREV", state.view_page != 0) &&
+           button(frame, layout, 0, 2, "NEXT", start + visible_bytes(layout, state) <
+                  filecommander::size(state.selected)) &&
+           button(frame, layout, 0, 3, state.view_format == ViewFormat::Ascii ? "HEX" : "ASCII") &&
+           button(frame, layout, 1, 0, "APPEND") &&
+           button(frame, layout, 1, 1, "RENAME") &&
+           button(frame, layout, 1, 2, "DELETE");
 }
 
 constexpr std::array<std::string_view, 4> key_rows{
@@ -270,13 +354,21 @@ bool draw(mm::display::Display& display, const Layout& layout, const State& stat
 
 void reload(State& state) {
     if (!filecommander::ready()) return;
-    auto status = filecommander::refresh(state.page * state.rows, state.rows);
+    auto status = filecommander::refresh(state.page * state.rows, state.rows, state.tree);
     if (status == mm::fs::Status::Ok && filecommander::count() == 0 && state.page != 0) {
         --state.page;
-        status = filecommander::refresh(state.page * state.rows, state.rows);
+        status = filecommander::refresh(state.page * state.rows, state.rows, state.tree);
     }
     if (state.selected >= filecommander::count()) state.selected = 0;
     if (status != mm::fs::Status::Ok) state.message = error_text(status);
+}
+
+mm::fs::Status load_view(State& state) {
+    state.preview_size = 0;
+    const auto status = filecommander::read(state.selected,
+        state.view_offsets[state.view_page], preview, state.preview_size);
+    state.message = error_text(status);
+    return status;
 }
 
 void begin_edit(State& state, Edit edit) {
@@ -305,13 +397,11 @@ void open_selected(State& state) {
             reload(state);
         }
     } else {
-        std::size_t count = 0;
-        const auto status = filecommander::read(state.selected, preview, count);
-        state.message = error_text(status);
-        if (status == mm::fs::Status::Ok) {
-            state.preview_size = count;
-            state.mode = Mode::View;
-        }
+        state.view_page = 0;
+        state.view_pages = 1;
+        state.view_offsets[0] = 0;
+        state.view_format = ViewFormat::Ascii;
+        if (load_view(state) == mm::fs::Status::Ok) state.mode = Mode::View;
     }
 }
 
@@ -338,6 +428,13 @@ void finish_edit(State& state) {
 void action(State& state, const Layout& layout, unsigned int x, unsigned int y) {
     if (state.mode == Mode::List && y < 20u) {
         state.theme = state.theme == Theme::Amber ? Theme::Green : Theme::Amber;
+        return;
+    }
+    if (state.mode == Mode::List && y < 42u) {
+        state.tree = !state.tree;
+        state.page = 0;
+        state.selected = 0;
+        reload(state);
         return;
     }
     if (state.mode == Mode::Edit) {
@@ -378,12 +475,43 @@ void action(State& state, const Layout& layout, unsigned int x, unsigned int y) 
         return;
     }
     if (state.mode == Mode::View) {
-        if (y >= layout.toolbar_y() && y < layout.toolbar_y() + 33u) {
+        if (y >= layout.toolbar_y()) {
+            const unsigned int row = (y - layout.toolbar_y()) / 33u;
             const unsigned int column = x * 4u / layout.width;
-            if (column == 0) state.mode = Mode::List;
-            else if (column == 1) begin_edit(state, Edit::Append);
-            else if (column == 2) begin_edit(state, Edit::Rename);
-            else state.mode = Mode::DeleteConfirm;
+            if (row == 0) {
+                if (column == 0) state.mode = Mode::List;
+                else if (column == 1 && state.view_page != 0) {
+                    --state.view_page;
+                    load_view(state);
+                } else if (column == 2) {
+                    const auto next = state.view_offsets[state.view_page] + visible_bytes(layout, state);
+                    if (next < filecommander::size(state.selected)) {
+                        if (state.view_page + 1u < state.view_pages) ++state.view_page;
+                        else {
+                            if (state.view_pages == state.view_offsets.size()) {
+                                for (unsigned int i = 1; i < state.view_pages; ++i)
+                                    state.view_offsets[i - 1u] = state.view_offsets[i];
+                                --state.view_pages;
+                                --state.view_page;
+                            }
+                            state.view_offsets[state.view_pages++] = next;
+                            ++state.view_page;
+                        }
+                        load_view(state);
+                    }
+                } else if (column == 3) {
+                    state.view_format = state.view_format == ViewFormat::Ascii ?
+                        ViewFormat::Hex : ViewFormat::Ascii;
+                    state.view_page = 0;
+                    state.view_pages = 1;
+                    state.view_offsets[0] = 0;
+                    load_view(state);
+                }
+            } else if (row == 1) {
+                if (column == 0) begin_edit(state, Edit::Append);
+                else if (column == 1) begin_edit(state, Edit::Rename);
+                else if (column == 2) state.mode = Mode::DeleteConfirm;
+            }
         }
         return;
     }

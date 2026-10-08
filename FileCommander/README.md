@@ -4,12 +4,21 @@ FileCommander browses the board's local file system with a touch display. Pico
 boards use LittleFS in their reserved internal flash region. Linux SDL uses the
 selected local directory through the same `mm.fs` API.
 
-Touch an entry to select it, then OPEN to enter a folder or preview a file. UP
-returns to the parent. PREV and NEXT page through directories of any size. NEW
-creates an empty file; DIR creates a folder. RENAME edits the selected name.
-DELETE requires a second confirmation tap. In file preview, APPEND adds up to
-24 text characters at a time. Preview displays the first 512 bytes; non-text
-bytes appear as dots. Files and directories retain their contents across runs.
+Touch an entry to select it, then OPEN to enter a folder or view a file. UP
+returns to the parent. PREV and NEXT page through directory entries. Tap
+LIST > beside the path to switch to TREE >, showing the current folder's
+descendants indented by depth; tap it again to return to the flat list. The
+tree includes eight nested levels. OPEN on a tree folder makes it the new
+root. NEW creates an empty file and DIR creates a folder in the path shown at
+the top, even when a nested tree entry is selected. RENAME and DELETE act on
+the selected entry; DELETE requires a second confirmation tap.
+
+The file viewer starts in ASCII text mode and honors line breaks. Tap HEX to
+see byte offsets, hexadecimal bytes, and an ASCII column; tap ASCII to switch
+back. PREV and NEXT move through the file, beyond the first 512 bytes. The
+viewer retains the most recent 64 page positions for backward navigation.
+Nonprintable bytes appear as dots. APPEND adds up to 24 text characters at a
+time. Files and directories retain their contents across runs.
 
 The default display theme is amber phosphor on black. Tap the AMBER > label
 in the list header to switch to green phosphor; tap GREEN > to switch back.
@@ -40,6 +49,7 @@ The Linux run script launches the built executable from `FileCommander/data/`.
 That directory is the host storage sandbox; it is created on first run. The
 generic `../scripts/run.sh` changes the working directory to the app source,
 so it should not be used for this file manager on Linux.
+The shared build configuration is in the parent `apps.cpp/out/config.mdy`.
 
 For the RP2350-Touch-LCD-2.8:
 
