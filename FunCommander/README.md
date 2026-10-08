@@ -15,6 +15,7 @@ Designed for touch-screen embedded devices (such as the Waveshare RP2350-Touch-L
   - Supports directory navigation (`..` parent, subfolders).
   - Paging support (`< PREV`, `NEXT >`) for directories with multiple games.
   - Source toggle button (`[TO SD]` / `[TO LFS]`) to seamlessly switch between internal LittleFS flash and external SD card.
+- **Audio Buzzer (`mm.audio`)**: Built-in sound synthesis driven by the CHIP-8 60 Hz sound timer (`chip8::sound_timer()`). Plays authentic retro beeps over the board's I2S audio sink (`mm.audio::selected_out()`, driving the PCM5101A DAC and APA2068 amplifier on RP2350-Touch-LCD-2.8), with graceful fallback on boards without audio.
 - **Touch-First Controls**:
   - In-game on-screen 4x4 hexadecimal keypad (0–F) matching standard CHIP-8 layout.
   - Real-time touch feedback (highlighting pressed keys) and continuous key-hold support for fluid controls.
@@ -24,8 +25,9 @@ Designed for touch-screen embedded devices (such as the Waveshare RP2350-Touch-L
 
 ```text
 FunCommander/
-  mm.mdy            - Application manifest (kind: app, uses mm.fs.local, mm.fs.fat, mm.sdcard.socket)
+  mm.mdy            - Application manifest (kind: app, uses mm.audio, mm.fs.local, mm.fs.fat, mm.sdcard.socket)
   main.cpp          - UI rendering, touch handling, and game loop
+  buzzer.hpp        - Audio buzzer synthesizer using mm.audio and mm::audio::Ring
   chip8.hpp         - Shared header matching CHIP-8/chip8.cpp
   launcher.hpp      - Dual LittleFS/FAT storage, directory browsing, and ROM loading interface
   launcher.cpp      - LittleFS /games and FAT /sd integration

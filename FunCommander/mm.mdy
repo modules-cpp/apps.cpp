@@ -12,6 +12,7 @@ use: mm.fs
 use: mm.fs.local
 use: mm.fs.fat
 use: mm.sdcard.socket
+use: mm.audio
 file: main.cpp
 file: ../CHIP-8/chip8.cpp
 file: launcher.cpp

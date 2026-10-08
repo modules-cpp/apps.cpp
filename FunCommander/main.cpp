@@ -1,12 +1,13 @@
-#include "chip8.hpp"
-#include "launcher.hpp"
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
 #include <string_view>
+
+#include "buzzer.hpp"
+#include "chip8.hpp"
+#include "launcher.hpp"
 
 import mm.display;
 import mm.fonts;
@@ -397,10 +398,12 @@ int get_touched_key(const Layout& layout, unsigned int x, unsigned int y) {
 struct Devices {
     mm::display::Display& display;
     mm::touch::Touch& touch;
+    funcommander::Buzzer buzzer{};
     bool display_ready = false;
     bool touch_ready = false;
 
     ~Devices() {
+        buzzer.shutdown();
         funcommander::shutdown_storage();
         if (touch_ready) (void)touch.sleep();
         if (display_ready) (void)display.sleep();
@@ -418,6 +421,7 @@ int main() {
     devices.display_ready = true;
     if (touch.initialize() != mm::touch::Status::Ok) return 2;
     devices.touch_ready = true;
+    (void)devices.buzzer.initialize();
 
     const auto panel = display.geometry();
     const auto sensor = touch.geometry();
@@ -603,6 +607,7 @@ int main() {
                     if (tx >= layout.width - 42u) {
                         // EXIT button pressed: Return to Launcher
                         state.mode = AppMode::Launcher;
+                        devices.buzzer.update(false);
                         clear_all_keys();
                         held_key = -1;
                         state.needs_redraw = true;
@@ -651,6 +656,8 @@ int main() {
                 timer_fraction -= 1000u;
                 chip8::tick();
             }
+
+            devices.buzzer.update(chip8::sound_timer() > 0);
 
             if (chip8::dirty() || key_changed || state.needs_redraw) {
                 state.needs_redraw = false;
