@@ -20,8 +20,8 @@ file. A local `.env` file is not loaded automatically.
 
 ## Build all applications
 
-The root `mm.mdy` connects CHIP-8, FileCommander, FunCommander, clockal,
-fractals, and kalkulator. From this repository's root, configure and build them
+The root `mm.mdy` connects AudioCommander, CHIP-8, FileCommander,
+FunCommander, clockal, fractals, and kalkulator. From this repository's root, configure and build them
 for Linux SDL:
 
 ```sh
@@ -35,6 +35,9 @@ For FileCommander, use `./scripts/run-filecommander-linux.sh` from the root,
 which keeps its Linux files in `FileCommander/data/`.
 Clockal reads `mm.rtc` for its seven-segment clock and date. See
 `clockal/README.md` for the supported Pico board and RTC trust behavior.
+AudioCommander needs a board with display, touch, and an `mm.audio` speaker;
+the RP2350 Touch LCD 2.8 is the initial target. See
+`AudioCommander/README.md` for its touch piano controls.
 
 ## Build and run fractals on Linux
 
