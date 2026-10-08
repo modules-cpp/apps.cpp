@@ -21,7 +21,8 @@ file. A local `.env` file is not loaded automatically.
 ## Build all applications
 
 The root `mm.mdy` connects AudioCommander, CHIP-8, FileCommander,
-FunCommander, clockal, fractals, and kalkulator. From this repository's root, configure and build them
+FunCommander, MIDICommander, clockal, fractals, and kalkulator. From this
+repository's root, configure and build them
 for Linux SDL:
 
 ```sh
@@ -38,6 +39,8 @@ Clockal reads `mm.rtc` for its seven-segment clock and date. See
 AudioCommander needs a board with display, touch, and an `mm.audio` speaker;
 the RP2350 Touch LCD 2.8 is the initial target. See
 `AudioCommander/README.md` for its touch piano controls.
+MIDICommander adds read-only LittleFS and FAT SD browsing for MIDI file
+playback on the same board; see `MIDICommander/README.md` for format limits.
 
 ## Build and run fractals on Linux
 

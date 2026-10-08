@@ -6,6 +6,7 @@ folder: AudioCommander
 folder: CHIP-8
 folder: FileCommander
 folder: FunCommander
+folder: MIDICommander
 folder: clockal
 folder: fractals
 folder: kalkulator
