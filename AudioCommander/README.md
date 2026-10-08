@@ -5,6 +5,12 @@ one-note-at-a-time piano: tap or hold one of the seven white keys or five black
 keys, and use `- OCT` / `OCT +` to select octaves 3 through 6. A held note
 decays; lifting your finger releases it smoothly.
 
+The active key is drawn before its tone begins, and the idle keyboard is drawn
+after the release ends. This keeps full-screen LCD transfers out of the
+time-critical audio loop. Brief empty touch reports are ignored so a held key
+does not repeatedly restart its note. The output drains the release samples
+before stopping the speaker.
+
 The app uses `mm.audio` with a caller-owned sample ring and the selected
 `mm.display` and `mm.touch` providers. It targets the Waveshare
 RP2350-Touch-LCD-2.8 board, whose `mm.audio` provider drives the PCM5101A

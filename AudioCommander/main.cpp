@@ -88,6 +88,10 @@ public:
 
     void note_off() { held_ = false; }
 
+    // A new key can be drawn only after the previous stream has stopped:
+    // a full-screen SPI transfer can outlast the I2S hardware queue.
+    void silence() { stop(); }
+
     [[nodiscard]] bool service() {
         if (!started_) return true;
         fill();
@@ -95,7 +99,14 @@ public:
             stop();
             return false;
         }
-        if (!held_ && envelope_ == 0) stop();
+        if (!held_ && envelope_ == 0) {
+            std::size_t pending = 0;
+            if (out_.pending(pending) != mm::audio::Status::Ok) {
+                stop();
+                return false;
+            }
+            if (pending == 0 && ring_.readable() == 0) stop();
+        }
         return true;
     }
 
@@ -110,7 +121,9 @@ private:
 
     void fill() {
         const auto region = ring_.write_region();
+        std::size_t written = 0;
         for (auto& sample : region) {
+            if (!held_ && envelope_ == 0) break;
             if (held_) {
                 if (envelope_ < 30000) {
                     envelope_ += 512;
@@ -129,8 +142,9 @@ private:
                                         envelope_ * 9000;
             sample = static_cast<std::int16_t>(scaled / (9LL * 32768 * 32768));
             phase_ += step_;
+            ++written;
         }
-        (void)ring_.commit_write(region.size());
+        (void)ring_.commit_write(written);
     }
 
     void stop() {
@@ -302,47 +316,63 @@ int main() {
     unsigned int octave = 4;
     int selected = -1;
     bool was_touched = false;
+    bool redraw_when_silent = false;
+    unsigned long last_touch_ms = 0;
+    unsigned int last_x = 0;
+    unsigned int last_y = 0;
     if (!draw(display, layout, octave, selected)) return 5;
 
     std::array<mm::touch::Point, 1> points{};
     for (;;) {
+        if (!piano.service()) return 8;
         std::size_t count = 0;
         if (touch.read(points, count) != mm::touch::Status::Ok) return 6;
-        const bool touched = count != 0;
-        unsigned int x = 0;
-        unsigned int y = 0;
+        unsigned long now_ms = 0;
+        if (mm::mcu::ticks_ms(now_ms) != mm::mcu::Status::Ok) return 12;
+        bool touched = count != 0;
         if (touched) {
-            x = static_cast<unsigned int>(static_cast<std::uint64_t>(points[0].x) *
-                                          panel.width / sensor.width);
-            y = static_cast<unsigned int>(static_cast<std::uint64_t>(points[0].y) *
-                                          panel.height / sensor.height);
+            last_x = static_cast<unsigned int>(static_cast<std::uint64_t>(points[0].x) *
+                                               panel.width / sensor.width);
+            last_y = static_cast<unsigned int>(static_cast<std::uint64_t>(points[0].y) *
+                                               panel.height / sensor.height);
+            last_touch_ms = now_ms;
+        } else if (was_touched && now_ms - last_touch_ms < 35u) {
+            // CST328 can report one unsettled/empty frame during a held touch.
+            touched = true;
         }
+        const unsigned int x = last_x;
+        const unsigned int y = last_y;
 
-        bool redraw = false;
         if (touched && !was_touched && y >= 82 && y < 117) {
             if (x < 73 && octave > first_octave) {
                 --octave;
-                redraw = true;
+                redraw_when_silent = true;
             } else if (x >= layout.width - 73 && octave < last_octave) {
                 ++octave;
-                redraw = true;
+                redraw_when_silent = true;
             }
         }
         const int note = touched ? hit_note(layout, x, y) : -1;
         if (note != selected) {
             if (note >= 0) {
+                piano.silence();
+                selected = note;
+                // Render the highlighted key before playback starts. The
+                // display's full SPI write blocks longer than audio's queue.
+                if (!draw(display, layout, octave, selected)) return 9;
                 if (!piano.note_on(static_cast<unsigned int>(note), octave)) return 7;
+                redraw_when_silent = false;
             } else {
                 piano.note_off();
+                selected = -1;
+                redraw_when_silent = true;
             }
-            selected = note;
-            redraw = true;
         }
         was_touched = touched;
         if (!piano.service()) return 8;
-        if (redraw) {
+        if (redraw_when_silent && !piano.active()) {
             if (!draw(display, layout, octave, selected)) return 9;
-            if (!piano.service()) return 10;
+            redraw_when_silent = false;
         }
         if (mm::mcu::delay_ms(piano.active() ? 1 : 12) != mm::mcu::Status::Ok)
             return 11;
