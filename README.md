@@ -18,6 +18,21 @@ The scripts in `scripts/` invoke `$MM_MODULES/configure`,
 Set `MM_MODULES` in each new terminal, or add the export to your shell startup
 file. A local `.env` file is not loaded automatically.
 
+## Build all applications
+
+The root `mm.mdy` connects CHIP-8, FileCommander, fractals, and kalkulator.
+From this repository's root, configure and build all four for Linux SDL:
+
+```sh
+./scripts/configure-linux.sh
+./scripts/build.sh
+```
+
+The shared configuration is `out/config.mdy`; executables are under
+`out-target-*/<app-directory>/`. Run an individual app from its directory.
+For FileCommander, use `./scripts/run-filecommander-linux.sh` from the root,
+which keeps its Linux files in `FileCommander/data/`.
+
 ## Build and run fractals on Linux
 
 From this repository's `fractals/` directory:
@@ -35,8 +50,8 @@ reported target. It uses `clang++` when available, otherwise `g++`. Set
 `CXX=clang++-21 ../scripts/configure-linux.sh`. The SDL2 development package
 must be installed to build the desktop display provider.
 
-Configure writes this external application's local `out/config.mdy`. Build and
-run use that configuration; they do not configure the modules.cpp installation.
+Configure writes the shared `apps.cpp/out/config.mdy`. Build and run use that
+configuration; they do not configure the modules.cpp installation.
 
 ## Build and flash the RP2350 touch LCD board
 
