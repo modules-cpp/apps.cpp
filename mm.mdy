@@ -4,6 +4,7 @@ kind: dir
 name: apps-cpp
 folder: CHIP-8
 folder: FileCommander
+folder: FunCommander
 folder: clockal
 folder: fractals
 folder: kalkulator

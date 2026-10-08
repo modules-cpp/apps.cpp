@@ -20,9 +20,9 @@ file. A local `.env` file is not loaded automatically.
 
 ## Build all applications
 
-The root `mm.mdy` connects CHIP-8, FileCommander, clockal, fractals, and
-kalkulator. From this repository's root, configure and build all five for
-Linux SDL:
+The root `mm.mdy` connects CHIP-8, FileCommander, FunCommander, clockal,
+fractals, and kalkulator. From this repository's root, configure and build them
+for Linux SDL:
 
 ```sh
 ./scripts/configure-linux.sh
