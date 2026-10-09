@@ -279,6 +279,8 @@ public:
         started_ = false;
     }
     [[nodiscard]] bool active() const { return started_; }
+    void set_volume(unsigned int vol) { volume_ = vol > 100u ? 100u : vol; }
+    [[nodiscard]] unsigned int volume() const { return volume_; }
     void finish() {
         ending_ = true;
         for (auto& voice : voices_) voice.gate = false;
@@ -378,6 +380,7 @@ private:
                 voice.phase += voice.step;
                 if (voice.age < 0xffff'ffffu) ++voice.age;
             }
+            mixed = (mixed * static_cast<std::int64_t>(volume_)) / 100LL;
             if (mixed > 30000) mixed = 30000;
             if (mixed < -30000) mixed = -30000;
             sample = static_cast<std::int16_t>(mixed);
@@ -388,10 +391,11 @@ private:
 
     mm::audio::Out& out_;
     mm::audio::Ring ring_{};
-    std::array<std::int16_t, 512> samples_{};
+    std::array<std::int16_t, 1024> samples_{};
     std::array<Voice, maximum_voices> voices_{};
     std::array<bool, 16> sustain_{};
     unsigned int rate_ = requested_rate;
+    unsigned int volume_ = 80;
     bool configured_ = false;
     bool started_ = false;
     bool ending_ = false;
@@ -519,6 +523,14 @@ bool service() {
 
 const MidiInfo& current_info() {
     return song.info();
+}
+
+void set_volume(unsigned int percent) {
+    synth().set_volume(percent);
+}
+
+unsigned int volume() {
+    return synth().volume();
 }
 
 } // namespace midicommander

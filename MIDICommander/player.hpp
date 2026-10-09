@@ -27,5 +27,7 @@ bool start();
 void stop();
 bool service();
 const MidiInfo& current_info();
+void set_volume(unsigned int percent);
+unsigned int volume();
 
 } // namespace midicommander

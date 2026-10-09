@@ -7,8 +7,9 @@ an SD card on the Waveshare RP2350-Touch-LCD-2.8. It reads LittleFS at `/data`
 double-tap the row. Tap **INFO** beside OPEN / PLAY to inspect file metadata
 (SMF format, track count, PPQ division, tempo in BPM, duration, note count,
 and title/sequence name). Directories can be opened the same way; **UP**, **PREV**,
-and **NEXT** navigate. While playing, **STOP** ends playback and **INFO** opens
-the metadata screen.
+and **NEXT** navigate. While playing, **VOL-** and **VOL+** adjust the synthesis
+volume (with visual gauge), **STOP** ends playback, and **INFO** opens the
+metadata screen.
 
 If **TO SD** fails, the status line now reports the filesystem result. “SD
 needs FAT16/32” means the card was reached but no supported FAT volume was

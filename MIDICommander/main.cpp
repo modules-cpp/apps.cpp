@@ -459,14 +459,22 @@ void format_duration(std::array<char, 64>& buf, std::size_t& len, unsigned int t
         if (!text(frame, line.data(), 10, y, white)) return false;
         y += step;
 
-        // 10. Status / State
+        // 10. Volume
+        len = 0;
+        append_str(line, len, "Volume: ");
+        append_uint(line, len, midicommander::volume());
+        append_str(line, len, "%");
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 11. Status / State
         len = 0;
         append_str(line, len, "State: ");
         append_str(line, len, playing ? "Playing" : "Ready to play");
         if (!text(frame, line.data(), 10, y, playing ? accent : dim)) return false;
         y += step;
 
-        // 11. Full Path
+        // 12. Full Path
         len = 0;
         append_str(line, len, "Path: ");
         append_str(line, len, info_path != nullptr ? info_path : "");
@@ -491,14 +499,15 @@ void format_duration(std::array<char, 64>& buf, std::size_t& len, unsigned int t
     if (!text(frame, "MIDI COMMANDER", 7, 10, accent)) return false;
 
     if (playing) {
-        (void)mm::gfx::fill_rectangle(frame, 8, 48, width - 16, 175, panel);
-        if (!text(frame, "NOW PLAYING", 16, 56, accent) ||
-            !text(frame, playing_name, 16, 78, white)) return false;
+        // Song Info Card: y = 42 to 196
+        (void)mm::gfx::fill_rectangle(frame, 8, 42, width - 16, 154, panel);
+        if (!text(frame, "NOW PLAYING", 16, 50, accent) ||
+            !text(frame, playing_name, 16, 72, white)) return false;
 
         const auto& info = midicommander::current_info();
         std::array<char, 64> line{};
-        unsigned int py = 102;
-        constexpr unsigned int pstep = 20;
+        unsigned int py = 94;
+        constexpr unsigned int pstep = 19;
 
         if (info.title[0] != '\0') {
             std::size_t len = 0;
@@ -534,12 +543,40 @@ void format_duration(std::array<char, 64>& buf, std::size_t& len, unsigned int t
         append_str(line, len, " | 8-Voice Piano");
         if (!text(frame, line.data(), 16, py, dim)) return false;
 
-        const auto stop_btn_y = height - 55;
-        (void)mm::gfx::fill_rectangle(frame, 8, stop_btn_y, width - 96, 42, selected_row);
-        if (!text(frame, "STOP", (width - 96) / 2 - 14, stop_btn_y + 14, white)) return false;
+        // Volume Control Panel: y = 202 to 246 (height 44)
+        (void)mm::gfx::fill_rectangle(frame, 8, 202, width - 16, 44, panel);
 
-        (void)mm::gfx::fill_rectangle(frame, width - 82, stop_btn_y, 74, 42, panel);
-        if (!text(frame, "INFO", width - 82 + 23, stop_btn_y + 14, white)) return false;
+        // VOL- button (x = 12 to 58)
+        (void)mm::gfx::fill_rectangle(frame, 12, 206, 46, 36, selected_row);
+        if (!text(frame, "VOL-", 21, 217, white)) return false;
+
+        // VOL+ button (x = width - 58 to width - 12)
+        (void)mm::gfx::fill_rectangle(frame, width - 58, 206, 46, 36, selected_row);
+        if (!text(frame, "VOL+", width - 49, 217, white)) return false;
+
+        // Center Volume text and gauge (x = 62 to width - 62 = 178)
+        const auto vol = midicommander::volume();
+        std::array<char, 64> vol_buf{};
+        std::size_t vlen = 0;
+        append_str(vol_buf, vlen, "VOL: ");
+        append_uint(vol_buf, vlen, vol);
+        append_str(vol_buf, vlen, "%");
+        if (!text(frame, vol_buf.data(), 89, 210, accent)) return false;
+
+        // Gauge bar: x = 66, y = 230, width = 108, height = 9
+        (void)mm::gfx::fill_rectangle(frame, 66, 230, 108, 9, background);
+        if (vol > 0) {
+            const unsigned int bar_w = (108u * vol) / 100u;
+            (void)mm::gfx::fill_rectangle(frame, 66, 230, bar_w > 108u ? 108u : bar_w, 9, accent);
+        }
+
+        // Bottom buttons: STOP (width 142) and INFO (width 74)
+        const auto stop_btn_y = height - 46;
+        (void)mm::gfx::fill_rectangle(frame, 8, stop_btn_y, width - 96, 38, selected_row);
+        if (!text(frame, "STOP", (width - 96) / 2 - 14, stop_btn_y + 12, white)) return false;
+
+        (void)mm::gfx::fill_rectangle(frame, width - 82, stop_btn_y, 74, 38, panel);
+        if (!text(frame, "INFO", width - 82 + 23, stop_btn_y + 12, white)) return false;
     } else {
         (void)mm::gfx::fill_rectangle(frame, width - 71, 38, 66, 29, panel);
         if (!text(frame, browser.on_sd() ? "TO LFS" : "TO SD", width - 68, 47,
@@ -714,7 +751,7 @@ int main() {
                     }
                 }
             } else if (midicommander::active()) {
-                if (last_y >= panel_geometry.height - 58) {
+                if (last_y >= panel_geometry.height - 48) {
                     if (last_x < panel_geometry.width - 82) {
                         midicommander::stop();
                         playing_name = "";
@@ -728,6 +765,25 @@ int main() {
                                    browser, status, true, playing_name,
                                    showing_info, info_name.data(), info_path.data());
                     }
+                } else if (last_y >= 202 && last_y < 250) {
+                    unsigned int current = midicommander::volume();
+                    if (last_x < 60) {
+                        if (current >= 10) current -= 10;
+                        else current = 0;
+                    } else if (last_x >= panel_geometry.width - 60) {
+                        if (current <= 90) current += 10;
+                        else current = 100;
+                    } else if (last_x >= 66 && last_x < 174) {
+                        int pct = static_cast<int>((last_x - 66) * 100 / 108);
+                        if (pct < 0) pct = 0;
+                        if (pct > 100) pct = 100;
+                        current = static_cast<unsigned int>(((pct + 5) / 10) * 10);
+                    }
+                    midicommander::set_volume(current);
+                    (void)midicommander::service();
+                    (void)draw(display, panel_geometry.width, panel_geometry.height,
+                               browser, status, true, playing_name,
+                               showing_info, info_name.data(), info_path.data());
                 }
             } else if (last_y >= 38 && last_y < 67 &&
                        last_x >= panel_geometry.width - 71) {
