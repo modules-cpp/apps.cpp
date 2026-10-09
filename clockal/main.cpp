@@ -186,7 +186,7 @@ const char* message(const State& state) {
 #if defined(__linux__)
     return "UTC SYSTEM TIME";
 #else
-    return state.trusted ? "RTC VERIFIED" : "RTC NEEDS SETTING";
+    return state.trusted ? "UTC CLOCK RUNNING" : "CLOCK NEEDS SETTING";
 #endif
 }
 

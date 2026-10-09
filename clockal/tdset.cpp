@@ -67,7 +67,7 @@ bool parse_time(std::string_view input, mm::rtc::DateTime& time) {
     if (time.month == 2 && leap_year(time.year)) ++last_day;
     if (time.day < 1 || time.day > last_day) return false;
 
-    // The PCF85063 weekday register follows Clockal's Sunday=0 convention.
+    // Both the hardware RTC and software clock use Sunday=0.
     constexpr std::array<unsigned int, 12> offsets{
         0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
     const unsigned int year = time.year - (time.month < 3u ? 1u : 0u);

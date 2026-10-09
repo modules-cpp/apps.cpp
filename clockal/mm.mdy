@@ -17,4 +17,5 @@ file: tdset.cpp
 # Clockal
 
 A digital clock with seven-segment time digits, calendar date, and selectable
-amber or green phosphor themes. It reads time through mm.rtc.
+amber or green phosphor themes. It reads time through mm.rtc, including the
+uptime-based software provider on the RP2350-Touch-LCD-1.54 board.
