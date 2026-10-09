@@ -306,7 +306,7 @@ int main() {
     const auto panel = display.geometry();
     const auto sensor = touch.geometry();
     if (panel.bits_per_pixel != 16 || panel.width < 220 ||
-        panel.width > maximum_width || panel.height < 280 ||
+        panel.width > maximum_width || panel.height < 220 ||
         panel.height > maximum_height || sensor.width == 0 || sensor.height == 0)
         return 3;
 
