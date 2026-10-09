@@ -21,6 +21,7 @@ std::array<char, mm::fs::max_path + 1> current_path{ '/', 'g', 'a', 'm', 'e', 's
 std::array<Entry, max_cached_entries> entries{};
 unsigned int entry_count = 0;
 unsigned int page_index = 0;
+unsigned int g_page_size = default_page_size;
 bool littlefs_mounted = false;
 bool sd_mounted = false;
 
@@ -292,13 +293,21 @@ mm::fs::Status navigate_up() {
     return refresh_directory();
 }
 
+unsigned int page_size() {
+    return g_page_size;
+}
+
+void set_page_size(unsigned int count) {
+    g_page_size = count > 0 ? count : 1;
+}
+
 unsigned int total_entries() {
     return entry_count;
 }
 
 unsigned int total_pages() {
     if (entry_count == 0) return 1;
-    return (entry_count + page_size - 1) / page_size;
+    return (entry_count + g_page_size - 1) / g_page_size;
 }
 
 unsigned int current_page() {
@@ -326,7 +335,7 @@ bool prev_page() {
 }
 
 const Entry* get_page_entry(unsigned int index_on_page) {
-    const unsigned int idx = page_index * page_size + index_on_page;
+    const unsigned int idx = page_index * g_page_size + index_on_page;
     if (idx < entry_count) {
         return &entries[idx];
     }
@@ -334,7 +343,7 @@ const Entry* get_page_entry(unsigned int index_on_page) {
 }
 
 int find_entry_index(unsigned int index_on_page) {
-    const unsigned int idx = page_index * page_size + index_on_page;
+    const unsigned int idx = page_index * g_page_size + index_on_page;
     return idx < entry_count ? static_cast<int>(idx) : -1;
 }
 

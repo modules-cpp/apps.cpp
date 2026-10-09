@@ -69,6 +69,7 @@ enum class AppMode {
 struct Layout {
     unsigned int width = 240;
     unsigned int height = 320;
+    bool compact = false;
 
     // Emulator scaling
     unsigned int chip8_scale = 3;
@@ -82,14 +83,17 @@ struct Layout {
     unsigned int list_top = 42;
     unsigned int list_row_h = 27;
     unsigned int toolbar_y = 244;
+    unsigned int toolbar_h = 28;
     unsigned int launch_btn_y = 276;
+    unsigned int launch_btn_h = 26;
+    unsigned int page_size = 7;
 
     [[nodiscard]] unsigned int key_width() const {
         return (width - 2u * keypad_margin - 3u * keypad_gap) / 4u;
     }
 
     [[nodiscard]] unsigned int key_height() const {
-        const unsigned int avail_h = height > keypad_top ? (height - keypad_top - keypad_margin) : 100u;
+        const unsigned int avail_h = height > (keypad_top + keypad_margin) ? (height - keypad_top - keypad_margin) : 100u;
         return (avail_h - 3u * keypad_gap) / 4u;
     }
 
@@ -205,21 +209,30 @@ bool render_launcher(mm::display::Display& display, const Layout& layout, const 
     if (mm::gfx::fill(target, col_bg_dark) != Status::Ok) return false;
 
     // Header bar
-    (void)mm::gfx::fill_rectangle(target, 0, 0, layout.width, 40, col_header_bg);
-    (void)render_label(target, "FUN COMMANDER", 6, 4, col_text_bright, mm::fonts::kMono16);
+    if (layout.compact) {
+        (void)mm::gfx::fill_rectangle(target, 0, 0, layout.width, 32, col_header_bg);
+        (void)render_label(target, "FUN COMMANDER", 6, 2, col_text_bright, mm::fonts::kMono12);
+        (void)render_label(target, funcommander::current_directory(), 6, 17, col_text_dim, mm::fonts::kMono12);
 
-    // Current Path & storage badge
-    (void)render_label(target, funcommander::current_directory(), 6, 24, col_text_dim, mm::fonts::kMono12);
+        const bool is_lfs = (funcommander::current_source() == funcommander::StorageSource::LittleFs);
+        const char* badge_text = is_lfs ? "[LFS]" : (funcommander::is_sd_mounted() ? "[SD]" : "[NO SD]");
+        const Rgb565 badge_color = (is_lfs || funcommander::is_sd_mounted()) ? col_green : col_red;
+        const unsigned int badge_x = layout.width > 60 ? layout.width - 55 : layout.width - 40;
+        (void)render_label(target, badge_text, badge_x, 2, badge_color, mm::fonts::kMono12);
+    } else {
+        (void)mm::gfx::fill_rectangle(target, 0, 0, layout.width, 40, col_header_bg);
+        (void)render_label(target, "FUN COMMANDER", 6, 4, col_text_bright, mm::fonts::kMono16);
+        (void)render_label(target, funcommander::current_directory(), 6, 24, col_text_dim, mm::fonts::kMono12);
 
-    const bool is_lfs = (funcommander::current_source() == funcommander::StorageSource::LittleFs);
-    const char* badge_text = is_lfs ? "[LFS: OK]" : (funcommander::is_sd_mounted() ? "[SD: OK]" : "[NO SD]");
-    const Rgb565 badge_color = (is_lfs || funcommander::is_sd_mounted()) ? col_green : col_red;
-
-    const unsigned int badge_x = layout.width > 90 ? layout.width - 85 : layout.width - 60;
-    (void)render_label(target, badge_text, badge_x, 4, badge_color, mm::fonts::kMono12);
+        const bool is_lfs = (funcommander::current_source() == funcommander::StorageSource::LittleFs);
+        const char* badge_text = is_lfs ? "[LFS: OK]" : (funcommander::is_sd_mounted() ? "[SD: OK]" : "[NO SD]");
+        const Rgb565 badge_color = (is_lfs || funcommander::is_sd_mounted()) ? col_green : col_red;
+        const unsigned int badge_x = layout.width > 90 ? layout.width - 85 : layout.width - 60;
+        (void)render_label(target, badge_text, badge_x, 4, badge_color, mm::fonts::kMono12);
+    }
 
     // List of entries
-    for (unsigned int i = 0; i < funcommander::page_size; ++i) {
+    for (unsigned int i = 0; i < funcommander::page_size(); ++i) {
         const auto* entry = funcommander::get_page_entry(i);
         const unsigned int y = layout.list_top + i * (layout.list_row_h + 1u);
         const unsigned int w = layout.width - 8u;
@@ -249,8 +262,9 @@ bool render_launcher(mm::display::Display& display, const Layout& layout, const 
                 tag_col = col_green;
             }
 
-            (void)render_label(target, tag, 8, y + 5, tag_col, mm::fonts::kMono12);
-            (void)render_label(target, entry->name.data(), 42, y + 5,
+            const unsigned int text_y = y + (layout.compact ? 3u : 5u);
+            (void)render_label(target, tag, 8, text_y, tag_col, mm::fonts::kMono12);
+            (void)render_label(target, entry->name.data(), layout.compact ? 38 : 42, text_y,
                                is_selected ? col_white : col_text_bright, mm::fonts::kMono12);
 
             if (entry->kind == funcommander::EntryKind::Chip8Game ||
@@ -259,7 +273,7 @@ bool render_launcher(mm::display::Display& display, const Layout& layout, const 
                 char size_str[16]{};
                 format_size(entry->size, size_str, sizeof(size_str));
                 const unsigned int size_x = layout.width > 50 ? layout.width - 48 : layout.width - 30;
-                (void)render_label(target, size_str, size_x, y + 5, col_text_dim, mm::fonts::kMono12);
+                (void)render_label(target, size_str, size_x, text_y, col_text_dim, mm::fonts::kMono12);
             }
         } else {
             // Empty slot
@@ -270,34 +284,36 @@ bool render_launcher(mm::display::Display& display, const Layout& layout, const 
     // Toolbar buttons (PREV, NEXT, UP, REMOUNT)
     const unsigned int btn_w = (layout.width - 8u - 3u * 4u) / 4u;
     const unsigned int y_tool = layout.toolbar_y;
+    const unsigned int h_tool = layout.toolbar_h;
     auto draw_btn = [&](unsigned int col, const char* label_str, Rgb565 text_col = col_text_bright) {
         const unsigned int bx = 4u + col * (btn_w + 4u);
         (void)mm::gfx::fill_rectangle(target, static_cast<int>(bx), static_cast<int>(y_tool),
-                                     btn_w, 28, col_btn_bg);
+                                     btn_w, h_tool, col_btn_bg);
         (void)mm::gfx::rectangle(target, static_cast<int>(bx), static_cast<int>(y_tool),
-                                 btn_w, 28, col_card_border);
+                                 btn_w, h_tool, col_card_border);
         const auto len = static_cast<unsigned int>(std::strlen(label_str));
         const unsigned int tx = bx + (btn_w > len * 7u ? (btn_w - len * 7u) / 2u : 2u);
-        (void)render_label(target, label_str, tx, y_tool + 6, text_col, mm::fonts::kMono12);
+        (void)render_label(target, label_str, tx, y_tool + (h_tool > 17u ? (h_tool - 17u) / 2u : 2u), text_col, mm::fonts::kMono12);
     };
 
     draw_btn(0, "< PREV");
     draw_btn(1, "NEXT >");
     draw_btn(2, "[UP]");
     if (funcommander::current_source() == funcommander::StorageSource::LittleFs) {
-        draw_btn(3, "[TO SD]", col_gold);
+        draw_btn(3, layout.compact ? "[SD]" : "[TO SD]", col_gold);
     } else {
-        draw_btn(3, "[TO LFS]", col_accent);
+        draw_btn(3, layout.compact ? "[LFS]" : "[TO LFS]", col_accent);
     }
 
     // Big Action Button: PLAY / LAUNCH GAME
     const unsigned int y_launch = layout.launch_btn_y;
-    (void)mm::gfx::fill_rectangle(target, 4, static_cast<int>(y_launch), layout.width - 8u, 26, col_accent_bg);
-    (void)mm::gfx::rectangle(target, 4, static_cast<int>(y_launch), layout.width - 8u, 26, col_accent);
-    const char* launch_title = "> LAUNCH SELECTED GAME <";
+    const unsigned int h_launch = layout.launch_btn_h;
+    (void)mm::gfx::fill_rectangle(target, 4, static_cast<int>(y_launch), layout.width - 8u, h_launch, col_accent_bg);
+    (void)mm::gfx::rectangle(target, 4, static_cast<int>(y_launch), layout.width - 8u, h_launch, col_accent);
+    const char* launch_title = layout.compact ? "> PLAY SELECTED <" : "> LAUNCH SELECTED GAME <";
     const unsigned int title_len = static_cast<unsigned int>(std::strlen(launch_title));
     const unsigned int l_tx = 4u + (layout.width - 8u > title_len * 7u ? (layout.width - 8u - title_len * 7u) / 2u : 4u);
-    (void)render_label(target, launch_title, l_tx, y_launch + 5, col_text_bright, mm::fonts::kMono12);
+    (void)render_label(target, launch_title, l_tx, y_launch + (h_launch > 17u ? (h_launch - 17u) / 2u : 2u), col_text_bright, mm::fonts::kMono12);
 
     // Status message at bottom
     (void)render_label(target, state.status_message.data(), 6, layout.height - 15, col_text_dim, mm::fonts::kMono12);
@@ -316,23 +332,29 @@ bool render_game(mm::display::Display& display, const Layout& layout, const Stat
     if (mm::gfx::fill(target, col_bg_dark) != Status::Ok) return false;
 
     // Header bar (Game Title, BEEP, RST, EXIT)
-    (void)mm::gfx::fill_rectangle(target, 0, 0, layout.width, 26, col_header_bg);
-    (void)render_label(target, state.active_game_name.data(), 6, 5, col_text_bright, mm::fonts::kMono12);
+    const unsigned int hdr_h = layout.compact ? 22u : 26u;
+    (void)mm::gfx::fill_rectangle(target, 0, 0, layout.width, hdr_h, col_header_bg);
+    (void)render_label(target, state.active_game_name.data(), 6, layout.compact ? 2u : 5u, col_text_bright, mm::fonts::kMono12);
 
     // Sound indicator
     if (chip8::sound_timer() > 0) {
-        (void)render_label(target, "[*BEEP*]", 110, 5, col_gold, mm::fonts::kMono12);
+        (void)render_label(target, "[*BEEP*]", layout.compact ? 95u : 110u, layout.compact ? 2u : 5u, col_gold, mm::fonts::kMono12);
     }
 
     // Reset button
-    (void)mm::gfx::fill_rectangle(target, static_cast<int>(layout.width - 82), 2, 36, 22, col_btn_bg);
-    (void)mm::gfx::rectangle(target, static_cast<int>(layout.width - 82), 2, 36, 22, col_card_border);
-    (void)render_label(target, "RST", layout.width - 74, 5, col_text_bright, mm::fonts::kMono12);
+    const unsigned int rst_x = layout.compact ? (layout.width - 72u) : (layout.width - 82u);
+    const unsigned int rst_w = layout.compact ? 32u : 36u;
+    const unsigned int btn_h = layout.compact ? 18u : 22u;
+    (void)mm::gfx::fill_rectangle(target, static_cast<int>(rst_x), 2, rst_w, btn_h, col_btn_bg);
+    (void)mm::gfx::rectangle(target, static_cast<int>(rst_x), 2, rst_w, btn_h, col_card_border);
+    (void)render_label(target, "RST", rst_x + (rst_w > 21u ? (rst_w - 21u) / 2u : 2u), layout.compact ? 2u : 5u, col_text_bright, mm::fonts::kMono12);
 
     // Exit button
-    (void)mm::gfx::fill_rectangle(target, static_cast<int>(layout.width - 42), 2, 38, 22, col_btn_bg);
-    (void)mm::gfx::rectangle(target, static_cast<int>(layout.width - 42), 2, 38, 22, col_card_border);
-    (void)render_label(target, "EXIT", layout.width - 38, 5, col_red, mm::fonts::kMono12);
+    const unsigned int exit_x = layout.compact ? (layout.width - 36u) : (layout.width - 42u);
+    const unsigned int exit_w = layout.compact ? 32u : 38u;
+    (void)mm::gfx::fill_rectangle(target, static_cast<int>(exit_x), 2, exit_w, btn_h, col_btn_bg);
+    (void)mm::gfx::rectangle(target, static_cast<int>(exit_x), 2, exit_w, btn_h, col_card_border);
+    (void)render_label(target, "EXIT", exit_x + (exit_w > 28u ? (exit_w - 28u) / 2u : 2u), layout.compact ? 2u : 5u, col_red, mm::fonts::kMono12);
 
     // CHIP-8 Screen frame & pixels
     const unsigned int screen_w = 64u * layout.chip8_scale;
@@ -357,11 +379,14 @@ bool render_game(mm::display::Display& display, const Layout& layout, const Stat
         }
     }
 
-    // Helper text
-    (void)render_label(target, "HOLD KEYS TO PLAY", layout.chip8_x + 30, layout.chip8_y + screen_h + 3,
-                       col_text_dim, mm::fonts::kMono12);
+    if (!layout.compact) {
+        // Helper text
+        (void)render_label(target, "HOLD KEYS TO PLAY", layout.chip8_x + 30, layout.chip8_y + screen_h + 3,
+                           col_text_dim, mm::fonts::kMono12);
+    }
 
     // Keypad (4x4 buttons)
+    const auto& key_font = layout.compact ? mm::fonts::kMono12 : mm::fonts::kMono16;
     for (unsigned int i = 0; i < keypad_keys.size(); ++i) {
         const auto box = layout.key_box(i);
         const bool pressed = (held_key == static_cast<int>(keypad_keys[i]));
@@ -371,9 +396,9 @@ bool render_game(mm::display::Display& display, const Layout& layout, const Stat
                                  box.width, box.height, pressed ? col_accent : col_card_border);
 
         const char char_str[] = { hex_chars[keypad_keys[i]], '\0' };
-        const auto tx = box.x + (box.width - mm::fonts::kMono16.advance) / 2u;
-        const auto ty = box.y + (box.height - mm::fonts::kMono16.height) / 2u;
-        (void)render_label(target, char_str, tx, ty, col_white, mm::fonts::kMono16);
+        const auto tx = box.x + (box.width - key_font.advance) / 2u;
+        const auto ty = box.y + (box.height > key_font.height ? (box.height - key_font.height) / 2u : 0u);
+        (void)render_label(target, char_str, tx, ty, col_white, key_font);
     }
 
     if (mm::gfx::write(display, target, 0, 0) != Status::Ok ||
@@ -426,7 +451,7 @@ int main() {
     const auto panel = display.geometry();
     const auto sensor = touch.geometry();
     if (panel.bits_per_pixel != 16 || panel.width < 220 ||
-        panel.width > maximum_width || panel.height < 280 ||
+        panel.width > maximum_width || panel.height < 220 ||
         panel.height > maximum_height || sensor.width == 0 ||
         sensor.height == 0)
         return 3;
@@ -435,23 +460,44 @@ int main() {
     Layout layout;
     layout.width = panel.width;
     layout.height = panel.height;
+    layout.compact = panel.height < 280u;
 
-    // CHIP-8 screen sizing: 64x32
-    const unsigned int scale_w = (panel.width - 16u) / 64u;
-    const unsigned int scale_h = 96u / 32u;
-    layout.chip8_scale = scale_w < scale_h ? scale_w : scale_h;
-    if (layout.chip8_scale < 1) layout.chip8_scale = 1;
+    if (layout.compact) {
+        layout.chip8_scale = 3u;
+        layout.chip8_x = (panel.width - 64u * layout.chip8_scale) / 2u;
+        layout.chip8_y = 24u;
+        layout.keypad_top = 124u;
+        layout.keypad_margin = 6u;
+        layout.keypad_gap = 4u;
 
-    layout.chip8_x = (panel.width - 64u * layout.chip8_scale) / 2u;
-    layout.chip8_y = 28u;
-    layout.keypad_top = layout.chip8_y + 32u * layout.chip8_scale + 16u;
-    layout.keypad_margin = 6u;
-    layout.keypad_gap = 4u;
+        layout.list_top = 34u;
+        layout.list_row_h = 23u;
+        layout.toolbar_y = 156u;
+        layout.toolbar_h = 24u;
+        layout.launch_btn_y = 184u;
+        layout.launch_btn_h = 24u;
+        layout.page_size = 5u;
+    } else {
+        const unsigned int scale_w = (panel.width - 16u) / 64u;
+        const unsigned int scale_h = 96u / 32u;
+        layout.chip8_scale = scale_w < scale_h ? scale_w : scale_h;
+        if (layout.chip8_scale < 1) layout.chip8_scale = 1;
 
-    layout.list_top = 42u;
-    layout.list_row_h = 27u;
-    layout.toolbar_y = panel.height - 76u;
-    layout.launch_btn_y = panel.height - 44u;
+        layout.chip8_x = (panel.width - 64u * layout.chip8_scale) / 2u;
+        layout.chip8_y = 28u;
+        layout.keypad_top = layout.chip8_y + 32u * layout.chip8_scale + 16u;
+        layout.keypad_margin = 6u;
+        layout.keypad_gap = 4u;
+
+        layout.list_top = 42u;
+        layout.list_row_h = 27u;
+        layout.toolbar_y = panel.height - 76u;
+        layout.toolbar_h = 28u;
+        layout.launch_btn_y = panel.height - 44u;
+        layout.launch_btn_h = 26u;
+        layout.page_size = 7u;
+    }
+    funcommander::set_page_size(layout.page_size);
 
     State state;
 
@@ -491,7 +537,7 @@ int main() {
             // Touch event in Launcher (only process on initial touch down)
             if (is_touched && !was_touched) {
                 // 1. Check list items
-                if (ty >= layout.list_top && ty < layout.list_top + funcommander::page_size * (layout.list_row_h + 1u)) {
+                if (ty >= layout.list_top && ty < layout.list_top + funcommander::page_size() * (layout.list_row_h + 1u)) {
                     const unsigned int row = (ty - layout.list_top) / (layout.list_row_h + 1u);
                     const auto* entry = funcommander::get_page_entry(row);
                     if (entry != nullptr) {
@@ -530,7 +576,7 @@ int main() {
                     }
                 }
                 // 2. Toolbar buttons: PREV, NEXT, UP, REMOUNT
-                else if (ty >= layout.toolbar_y && ty < layout.toolbar_y + 28u) {
+                else if (ty >= layout.toolbar_y && ty < layout.toolbar_y + layout.toolbar_h) {
                     const unsigned int btn_w = (layout.width - 8u - 3u * 4u) / 4u;
                     if (tx >= 4u && tx < 4u + btn_w) {
                         if (funcommander::prev_page()) {
@@ -557,7 +603,7 @@ int main() {
                     }
                 }
                 // 3. Launch button
-                else if (ty >= layout.launch_btn_y && ty < layout.launch_btn_y + 26u) {
+                else if (ty >= layout.launch_btn_y && ty < layout.launch_btn_y + layout.launch_btn_h) {
                     const auto* entry = funcommander::get_page_entry(state.selected_row);
                     if (entry != nullptr) {
                         if (entry->kind == funcommander::EntryKind::Directory) {
@@ -603,8 +649,11 @@ int main() {
             int next_key = -1;
             if (is_touched) {
                 // Check Top Bar: Reset and Exit buttons
-                if (ty < 26u) {
-                    if (tx >= layout.width - 42u) {
+                const unsigned int top_bar_h = layout.compact ? 22u : 26u;
+                const unsigned int exit_btn_w = layout.compact ? 36u : 42u;
+                const unsigned int rst_btn_w = layout.compact ? 72u : 82u;
+                if (ty < top_bar_h) {
+                    if (tx >= layout.width - exit_btn_w) {
                         // EXIT button pressed: Return to Launcher
                         state.mode = AppMode::Launcher;
                         devices.buzzer.update(false);
@@ -614,7 +663,7 @@ int main() {
                         was_touched = is_touched;
                         continue;
                     }
-                    if (tx >= layout.width - 82u && tx < layout.width - 42u) {
+                    if (tx >= layout.width - rst_btn_w && tx < layout.width - exit_btn_w) {
                         // RST button pressed: Restart current game
                         if (state.active_rom_size > 0) {
                             (void)chip8::load(std::span<const std::uint8_t>{rom_buffer.data(), state.active_rom_size});

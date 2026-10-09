@@ -31,7 +31,9 @@ struct Entry {
 };
 
 // Maximum entries shown per page.
-constexpr unsigned int page_size = 7;
+constexpr unsigned int default_page_size = 7;
+unsigned int page_size();
+void set_page_size(unsigned int count);
 // Maximum entries cached in directory list.
 constexpr unsigned int max_cached_entries = 32;
 

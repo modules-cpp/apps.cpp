@@ -61,6 +61,10 @@ struct Layout {
     unsigned int scale;
     unsigned int screen_x;
     unsigned int screen_y;
+    unsigned int keypad_top;
+    unsigned int key_margin;
+    unsigned int key_gap;
+    bool compact;
 
     [[nodiscard]] unsigned int key_width() const {
         return (width - 2u * key_margin - 3u * key_gap) / 4u;
@@ -78,7 +82,8 @@ struct Layout {
 };
 
 [[nodiscard]] bool label(Surface target, const char* value, unsigned int x,
-                         unsigned int y, Rgb565 color) {
+                         unsigned int y, Rgb565 color,
+                         const mm::fonts::Font& font = mm::fonts::kMono16) {
     std::size_t count = 0;
     char8_t characters[text_limit]{};
     while (value[count] != 0) {
@@ -87,13 +92,13 @@ struct Layout {
         ++count;
     }
     if (count == 0) return true;
-    const auto width = static_cast<unsigned int>(count) * mm::fonts::kMono16.advance;
+    const auto width = static_cast<unsigned int>(count) * font.advance;
     const auto row_bytes = (width + 7u) / 8u;
-    const auto bytes = row_bytes * mm::fonts::kMono16.height;
-    const Surface glyphs{width, mm::fonts::kMono16.height, 1,
+    const auto bytes = row_bytes * font.height;
+    const Surface glyphs{width, font.height, 1,
                          std::span<std::byte>{text_bytes}.first(bytes)};
     if (mm::gfx::fill(glyphs, mm::display::Color::Black) != Status::Ok ||
-        mm::fonts::render(characters, count, mm::fonts::kMono16,
+        mm::fonts::render(characters, count, font,
                           mm::display::Color::White, 0, 0, glyphs) != Status::Ok)
         return false;
     for (unsigned int row = 0; row < glyphs.height; ++row)
@@ -113,9 +118,20 @@ struct Layout {
     const auto bytes = static_cast<std::size_t>(layout.width) * layout.height * 2u;
     const Surface target{layout.width, layout.height, 16,
                          std::span<std::byte>{frame_bytes}.first(bytes)};
-    if (mm::gfx::fill(target, background) != Status::Ok ||
-        !label(target, "CATCH THE DOT", 8, 5, white))
+    if (mm::gfx::fill(target, background) != Status::Ok)
         return false;
+
+    if (layout.compact) {
+        if (!label(target, "CATCH THE DOT", 6, 2, white, mm::fonts::kMono12) ||
+            !label(target, "4< >6",
+                   layout.width - 5u * mm::fonts::kMono12.advance - 6u, 2,
+                   white, mm::fonts::kMono12))
+            return false;
+    } else {
+        if (!label(target, "CATCH THE DOT", 8, 5, white, mm::fonts::kMono16) ||
+            !label(target, "4 LEFT  6 RIGHT", 8, 136, white, mm::fonts::kMono16))
+            return false;
+    }
 
     const unsigned int screen_width = 64u * layout.scale;
     const unsigned int screen_height = 32u * layout.scale;
@@ -133,7 +149,7 @@ struct Layout {
                     layout.scale, layout.scale, screen_ink) != Status::Ok)
                 return false;
 
-    if (!label(target, "4 LEFT  6 RIGHT", 8, 136, white)) return false;
+    const auto& key_font = layout.compact ? mm::fonts::kMono12 : mm::fonts::kMono16;
     for (unsigned int index = 0; index < keypad.size(); ++index) {
         const auto box = layout.key_box(index);
         if (mm::gfx::fill_rectangle(
@@ -144,10 +160,10 @@ struct Layout {
             return false;
         const char character[] = {hex[keypad[index]], 0};
         const auto x = box.x +
-            (box.width - mm::fonts::kMono16.advance) / 2u;
+            (box.width - key_font.advance) / 2u;
         const auto y = box.y +
-            (box.height - mm::fonts::kMono16.height) / 2u;
-        if (!label(target, character, x, y, white)) return false;
+            (box.height - key_font.height) / 2u;
+        if (!label(target, character, x, y, white, key_font)) return false;
     }
     if (mm::gfx::write(display, target, 0, 0) != Status::Ok ||
         display.refresh(mm::display::Refresh::Full) != Status::Ok)
@@ -192,17 +208,21 @@ int main() {
     const auto panel = display.geometry();
     const auto sensor = touch.geometry();
     if (panel.bits_per_pixel != 16 || panel.width < 220 ||
-        panel.width > maximum_width || panel.height < 280 ||
+        panel.width > maximum_width || panel.height < 220 ||
         panel.height > maximum_height || sensor.width == 0 ||
         sensor.height == 0)
         return 3;
-    const unsigned int scale_width = panel.width / 64u;
-    const unsigned int scale_height = (game_bottom - game_top) / 32u;
-    const unsigned int scale =
-        scale_width < scale_height ? scale_width : scale_height;
+    const bool compact = panel.height < 280u;
+    const unsigned int scale = compact ? 3u : (
+        (panel.width / 64u) < ((game_bottom - game_top) / 32u) ?
+        (panel.width / 64u) : ((game_bottom - game_top) / 32u));
+    const unsigned int screen_x = (panel.width - 64u * scale) / 2u;
+    const unsigned int screen_y = compact ? 20u : (game_top + (game_bottom - game_top - 32u * scale) / 2u);
+    const unsigned int kp_top = compact ? 120u : keypad_top;
+    const unsigned int kp_margin = compact ? 6u : key_margin;
+    const unsigned int kp_gap = compact ? 4u : key_gap;
     const Layout layout{panel.width, panel.height, scale,
-                        (panel.width - 64u * scale) / 2u,
-                        game_top + (game_bottom - game_top - 32u * scale) / 2u};
+                        screen_x, screen_y, kp_top, kp_margin, kp_gap, compact};
     if (!chip8::load(chip8::game_rom())) return 4;
     if (!render(display, layout, -1)) return 5;
 
