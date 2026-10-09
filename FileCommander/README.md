@@ -4,6 +4,14 @@ FileCommander browses the board's local file system with a touch display. Pico
 boards use LittleFS in their reserved internal flash region. Linux SDL uses the
 selected local directory through the same `mm.fs` API.
 
+Tap LFS > in the title bar to select the SD card and mount its FAT filesystem
+at `/sd`; tap SD > to return to `/data`. Each volume keeps its current folder.
+The same list, tree, viewer, create, append, rename, and delete controls work
+on either volume. The SD card must already be FAT formatted. If mounting fails,
+the screen displays the mount error, and the title-bar selector remains usable.
+FileCommander does not format SD cards. On a Linux SDL board without an SD socket
+provider, selecting SD reports Storage unsupported.
+
 Touch an entry to select it, then OPEN to enter a folder or view a file. UP
 returns to the parent. PREV and NEXT page through directory entries. Tap
 LIST > beside the path to switch to TREE >, showing the current folder's
@@ -25,9 +33,9 @@ in the list header to switch to green phosphor; tap GREEN > to switch back.
 The selected row and on-screen buttons follow the chosen theme. Monochrome
 displays show the same interface in black and white.
 
-Tap INFO > beside the status line for the volume information pages. PREV and
-NEXT show capacity, available space, and the backing flash geometry and
-LittleFS settings on Pico; REFRESH rereads the live values. Cache, lookahead,
+Tap INFO > beside the status line for the selected volume's information pages.
+PREV and NEXT show capacity, available space, and flash geometry and LittleFS
+settings on Pico, or sector geometry for SD; REFRESH rereads the live values. Cache, lookahead,
 and block-cycle values are the current Pico provider's fixed configuration.
 LittleFS free space
 is an estimate based on allocated flash blocks, not a count of writable file

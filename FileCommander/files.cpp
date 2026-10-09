@@ -8,6 +8,8 @@
 import mm.fs;
 import mm.fs.local;
 import mm.fs.littlefs;
+import mm.fs.fat;
+import mm.sdcard.socket;
 
 namespace filecommander {
 namespace {
@@ -22,10 +24,16 @@ struct Entry {
 };
 std::array<Entry, maximum_entries> entries{};
 std::array<char, maximum_path + 1> current{ '/', 'd', 'a', 't', 'a', '\0' };
+std::array<char, maximum_path + 1> local_path = current;
+std::array<char, maximum_path + 1> sd_path{ '/', 's', 'd', '\0' };
 unsigned int listed = 0;
 bool more = false;
-bool mounted = false;
+bool local_mounted = false;
+bool sd_mounted = false;
+bool on_sd = false;
 constexpr unsigned int maximum_tree_depth = 8;
+
+std::string_view root() { return on_sd ? "/sd" : "/data"; }
 
 struct TreeFrame {
     std::array<char, maximum_path + 1> path{};
@@ -129,9 +137,29 @@ mm::fs::Status refresh_tree(unsigned int offset, unsigned int limit) {
 }
 
 mm::fs::Status initialize() {
-    if (mounted) return mm::fs::Status::Ok;
+    if (local_mounted) return mm::fs::Status::Ok;
     const auto status = mm::fs::local::mount("/data", {false, false});
-    if (status == mm::fs::Status::Ok) mounted = true;
+    if (status == mm::fs::Status::Ok) local_mounted = true;
+    return status;
+}
+
+bool sd_selected() { return on_sd; }
+
+mm::fs::Status switch_volume() {
+    listed = 0;
+    more = false;
+    if (on_sd) {
+        sd_path = current;
+        current = local_path;
+        on_sd = false;
+        return initialize();
+    }
+    local_path = current;
+    current = sd_path;
+    on_sd = true;
+    if (sd_mounted) return mm::fs::Status::Ok;
+    const auto status = mm::fs::fat::mount("/sd", mm::sdcard::socket::card());
+    if (status == mm::fs::Status::Ok) sd_mounted = true;
     return status;
 }
 
@@ -139,7 +167,8 @@ mm::fs::Status erase_and_format() {
 #if defined(__linux__)
     return mm::fs::Status::Unsupported;
 #else
-    if (mounted) return mm::fs::Status::Busy;
+    if (on_sd) return mm::fs::Status::Unsupported;
+    if (local_mounted) return mm::fs::Status::Busy;
     mm::fs::McuFlash flash;
     mm::fs::FlashGeometry geometry{};
     auto status = flash.geometry(geometry);
@@ -158,13 +187,17 @@ mm::fs::Status erase_and_format() {
 }
 
 void shutdown() {
-    if (mounted) {
+    if (sd_mounted) {
+        (void)mm::fs::fat::unmount("/sd");
+        sd_mounted = false;
+    }
+    if (local_mounted) {
         (void)mm::fs::local::unmount("/data");
-        mounted = false;
+        local_mounted = false;
     }
 }
 
-bool ready() { return mounted; }
+bool ready() { return on_sd ? sd_mounted : local_mounted; }
 const char* path() { return current.data(); }
 unsigned int count() { return listed; }
 bool has_more() { return more; }
@@ -176,7 +209,7 @@ unsigned int depth(unsigned int index) { return index < listed ? entries[index].
 mm::fs::Status refresh(unsigned int offset, unsigned int limit, bool tree) {
     listed = 0;
     more = false;
-    if (!mounted) return mm::fs::Status::NotFound;
+    if (!ready()) return mm::fs::Status::NotFound;
     if (limit == 0 || limit > maximum_entries) return mm::fs::Status::BadArgument;
     if (tree) return refresh_tree(offset, limit);
     mm::fs::Directory dir;
@@ -211,15 +244,16 @@ mm::fs::Status enter(unsigned int index) {
 }
 
 mm::fs::Status up() {
-    if (std::strcmp(current.data(), "/data") == 0) return mm::fs::Status::BadArgument;
+    if (std::string_view{current.data()} == root()) return mm::fs::Status::BadArgument;
     char* end = std::strrchr(current.data(), '/');
-    if (end == nullptr || end <= current.data() + 4) return mm::fs::Status::BadArgument;
+    if (end == nullptr || end < current.data() + root().size())
+        return mm::fs::Status::BadArgument;
     *end = 0;
     return mm::fs::Status::Ok;
 }
 
 mm::fs::Status create(std::string_view name, bool as_directory) {
-    if (!mounted) return mm::fs::Status::NotFound;
+    if (!ready()) return mm::fs::Status::NotFound;
     std::array<char, maximum_path + 1> child{};
     auto status = child_path(name, child);
     if (status != mm::fs::Status::Ok) return status;

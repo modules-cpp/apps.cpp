@@ -10,11 +10,14 @@ import mm.fonts;
 import mm.fs;
 import mm.gfx;
 import mm.mcu;
+import mm.sdcard.socket;
 import mm.touch;
 
 namespace filecommander {
 mm::fs::Status initialize();
 mm::fs::Status erase_and_format();
+mm::fs::Status switch_volume();
+bool sd_selected();
 void shutdown();
 bool ready();
 const char* path();
@@ -83,11 +86,14 @@ struct State {
     mm::fs::Status volume_status = mm::fs::Status::NotFound;
     mm::mcu::FlashRegionGeometry flash_geometry{};
     mm::mcu::Status flash_status = mm::mcu::Status::Unsupported;
+    mm::fs::BlockGeometry sd_geometry{};
+    mm::fs::Status sd_status = mm::fs::Status::Unsupported;
     mm::fs::Status mount_error = mm::fs::Status::Ok;
 };
 
 bool littlefs_volume(const State& state) {
-    return state.volume_status == mm::fs::Status::Ok &&
+    return !filecommander::sd_selected() &&
+           state.volume_status == mm::fs::Status::Ok &&
            state.flash_status == mm::mcu::Status::Ok &&
            state.flash_geometry.erase_size != 0 &&
            state.volume_space.total == state.flash_geometry.size;
@@ -96,8 +102,17 @@ bool littlefs_volume(const State& state) {
 void refresh_info(State& state) {
     state.volume_space = {};
     state.flash_geometry = {};
+    state.sd_geometry = {};
+    state.flash_status = mm::mcu::Status::Unsupported;
+    state.sd_status = mm::fs::Status::Unsupported;
     state.volume_status = filecommander::ready() ?
-        mm::fs::space("/data", state.volume_space) : state.mount_error;
+        mm::fs::space(filecommander::sd_selected() ? "/sd" : "/data",
+                      state.volume_space) : state.mount_error;
+    if (filecommander::sd_selected()) {
+        if (filecommander::ready())
+            state.sd_status = mm::sdcard::socket::card().geometry(state.sd_geometry);
+        return;
+    }
 #if defined(__linux__)
     // A Linux flash geometry query can create an unrelated mapped image file.
     state.flash_status = mm::mcu::Status::Unsupported;
@@ -170,13 +185,17 @@ bool button(Surface frame, const Layout& layout, unsigned int row,
 
 bool render_list(Surface frame, const Layout& layout, const State& state) {
     const std::string_view theme_name = state.theme == Theme::Amber ? "AMBER >" : "GREEN >";
+    const std::string_view volume_name = filecommander::sd_selected() ? "SD >" : "LFS >";
     const std::string_view tree_name = state.tree ? "TREE >" : "LIST >";
     const unsigned int theme_x = layout.width - 4u -
         static_cast<unsigned int>(theme_name.size()) * mm::fonts::kMono12.advance;
+    const unsigned int volume_x = theme_x -
+        static_cast<unsigned int>(volume_name.size() + 1u) * mm::fonts::kMono12.advance;
     const unsigned int tree_x = layout.width - 4u -
         static_cast<unsigned int>(tree_name.size()) * mm::fonts::kMono12.advance;
     const unsigned int info_x = layout.width - 4u - 6u * mm::fonts::kMono12.advance;
     if (!label(frame, "FILE COMMANDER", 4, 4) ||
+        !label(frame, volume_name, volume_x, 4) ||
         !label(frame, theme_name, theme_x, 4) ||
         !box(frame, 2, 19, layout.width - 4u, 1, true) ||
         !label(frame, filecommander::path(), 4, 24) ||
@@ -188,7 +207,8 @@ bool render_list(Surface frame, const Layout& layout, const State& state) {
     if (!filecommander::ready()) {
         if (!label(frame, "Storage is unavailable", 6, 82) ||
             !label(frame, error_text(state.mount_error), 6, 104)) return false;
-        if (state.mount_error == mm::fs::Status::Corrupt) {
+        if (!filecommander::sd_selected() &&
+            state.mount_error == mm::fs::Status::Corrupt) {
             return button(frame, layout, 1, 0, "ERASE");
         }
         return true;
@@ -337,6 +357,7 @@ bool info_number(Surface frame, unsigned int row, std::string_view title,
 }
 
 bool render_info(Surface frame, const Layout& layout, const State& state) {
+    const bool sd = filecommander::sd_selected();
     const bool littlefs = littlefs_volume(state);
     const auto& geometry = state.flash_geometry;
     const auto& space = state.volume_space;
@@ -346,11 +367,11 @@ bool render_info(Surface frame, const Layout& layout, const State& state) {
                                              "DETAILS 3/3", 5, 4) ||
         !box(frame, 3, 19, layout.width - 6u, 1, true)) return false;
     if (state.info_page == 0) {
-        if (!info_text(frame, 0, "Mount: /data") ||
+        if (!info_text(frame, 0, sd ? "Mount: /sd" : "Mount: /data") ||
             !info_text(frame, 1, board.empty() ? "Board: unspecified" : board) ||
             !info_text(frame, 2, filecommander::ready() ? "State: mounted" :
                        error_text(state.mount_error)) ||
-            !info_text(frame, 3, littlefs ? "Backend: LittleFS" :
+            !info_text(frame, 3, sd ? "Backend: FAT" : littlefs ? "Backend: LittleFS" :
                        "Backend: local volume") ||
             !info_text(frame, 4, "Access: read/write")) return false;
         if (state.volume_status == mm::fs::Status::Ok) {
@@ -361,12 +382,21 @@ bool render_info(Surface frame, const Layout& layout, const State& state) {
                              space.free, " B") ||
                 !info_number(frame, 7, littlefs ? "Allocated: " : "Disk used: ",
                              used, " B") ||
-                !info_text(frame, 8, littlefs ? "Used = allocated blocks" :
+                !info_text(frame, 8, sd ? "FAT space from card" :
+                           littlefs ? "Used = allocated blocks" :
                            "Host disk, not folder")) return false;
         } else if (!info_text(frame, 5, "Space: unavailable") ||
                    !info_text(frame, 6, error_text(state.volume_status))) return false;
     } else if (state.info_page == 1) {
-        if (!littlefs) {
+        if (sd) {
+            if (state.sd_status == mm::fs::Status::Ok) {
+                if (!info_number(frame, 0, "Sectors: ", state.sd_geometry.count) ||
+                    !info_number(frame, 1, "Sector size: ", state.sd_geometry.size, " B") ||
+                    !info_number(frame, 2, "Card bytes: ",
+                                 state.sd_geometry.count * state.sd_geometry.size)) return false;
+            } else if (!info_text(frame, 0, "SD geometry unavailable") ||
+                       !info_text(frame, 1, error_text(state.sd_status))) return false;
+        } else if (!littlefs) {
             if (!info_text(frame, 0, "No LittleFS geometry") ||
                 !info_text(frame, 1, "for this local volume") ||
                 !info_text(frame, 3, "Flash region absent or") ||
@@ -382,15 +412,18 @@ bool render_info(Surface frame, const Layout& layout, const State& state) {
                    !info_text(frame, 7, "Block cycles: 500") ||
                    !info_number(frame, 8, "Max name: ", mm::fs::max_name, " B")) return false;
     } else {
-        if (!info_text(frame, 0, littlefs ? "Pico LittleFS provider" :
+        if (!info_text(frame, 0, sd ? "SD card FAT volume" :
+                                     littlefs ? "Pico LittleFS provider" :
                                      "Local volume provider") ||
-            !info_text(frame, 1, littlefs ? "Free = block estimate" :
+            !info_text(frame, 1, sd ? "Card must be FAT formatted" :
+                                     littlefs ? "Free = block estimate" :
                                      "Space = host disk") ||
             !info_text(frame, 2, "File bytes may differ") ||
             !info_text(frame, 3, "Wear counts: unavailable") ||
             !info_text(frame, 4, "On-disk rev: unavailable") ||
             !info_number(frame, 5, "Max path: ", mm::fs::max_path, " B") ||
-            !info_text(frame, 6, "Erase/format: confirm") ||
+            !info_text(frame, 6, sd ? "No SD format action" :
+                                     "Erase/format: confirm") ||
             !info_text(frame, 7, "REFRESH rereads space")) return false;
     }
     return button(frame, layout, 0, 0, "BACK") &&
@@ -543,7 +576,17 @@ void finish_edit(State& state) {
 
 void action(State& state, const Layout& layout, unsigned int x, unsigned int y) {
     if (state.mode == Mode::List && y < 20u) {
-        state.theme = state.theme == Theme::Amber ? Theme::Green : Theme::Amber;
+        const unsigned int theme_x = layout.width - 4u - 7u * mm::fonts::kMono12.advance;
+        const unsigned int volume_x = theme_x - 6u * mm::fonts::kMono12.advance;
+        if (x >= theme_x) {
+            state.theme = state.theme == Theme::Amber ? Theme::Green : Theme::Amber;
+        } else if (x >= volume_x) {
+            state.mount_error = filecommander::switch_volume();
+            state.message = error_text(state.mount_error);
+            state.page = 0;
+            state.selected = 0;
+            if (filecommander::ready()) reload(state);
+        }
         return;
     }
     if (state.mode == Mode::List && y < 42u) {
@@ -648,7 +691,8 @@ void action(State& state, const Layout& layout, unsigned int x, unsigned int y) 
         return;
     }
     if (!filecommander::ready()) {
-        if (state.mount_error == mm::fs::Status::Corrupt &&
+        if (!filecommander::sd_selected() &&
+            state.mount_error == mm::fs::Status::Corrupt &&
             y >= layout.toolbar_y() + 33u && x < layout.width / 4u)
             state.mode = Mode::FormatConfirm;
         return;

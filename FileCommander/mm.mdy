@@ -11,6 +11,8 @@ use: mm.mcu
 use: mm.fs
 use: mm.fs.local
 use: mm.fs.littlefs
+use: mm.fs.fat
+use: mm.sdcard.socket
 file: main.cpp
 file: files.cpp
 ---
@@ -23,3 +25,4 @@ local directory. The user can navigate, create empty files and folders,
 rename, delete with confirmation, view files as text or hex, and inspect
 volume information. On Pico, a confirmed erase action wipes the reserved flash
 region, formats it as LittleFS, and mounts the new volume.
+The volume selector also mounts the board's FAT-formatted SD card at `/sd`.
