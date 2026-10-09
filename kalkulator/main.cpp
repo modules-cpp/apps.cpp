@@ -21,7 +21,7 @@ namespace {
 constexpr unsigned int maximum_width = 480;
 constexpr unsigned int maximum_height = 320;
 constexpr unsigned int text_limit = 24;
-constexpr unsigned int poll_ms = 25;
+constexpr unsigned int poll_ms = 5;
 std::array<std::byte, maximum_width * maximum_height * 2u> pixels;
 std::array<std::byte,
            ((text_limit * mm::fonts::kMono16.advance + 7u) / 8u) *
@@ -167,10 +167,15 @@ struct Layout {
 }
 
 [[nodiscard]] char hit(const Layout& layout, unsigned int x, unsigned int y) {
+    // Map the whole touch grid, including the gaps and panel edges. A tap
+    // near the right edge should still reach the operator column.
+    if (y < Layout::top || y >= layout.height - Layout::bottom) return 0;
+    const unsigned int row = (y - Layout::top) * 5u /
+                             (layout.height - Layout::top - Layout::bottom);
+    const unsigned int column = x >= layout.width ? 3u : x * 4u / layout.width;
     for (const auto& key : keys) {
-        const auto box = layout.box(key);
-        if (x >= box.x && y >= box.y &&
-            x - box.x < box.width && y - box.y < box.height)
+        if (key.row == row && column >= key.column &&
+            column - key.column < key.columns)
             return key.action;
     }
     return 0;
@@ -210,13 +215,14 @@ int main() {
     kalkulator::clear();
     if (!draw(display, layout)) return 4;
 
-    bool was_down = false;
+    char held_key = 0;
     std::array<mm::touch::Point, 1> points{};
     for (;;) {
         std::size_t count = 0;
         if (touch.read(points, count) != mm::touch::Status::Ok) return 5;
-        const bool down = count != 0;
-        if (down && !was_down) {
+        if (count == 0) {
+            held_key = 0;
+        } else {
             const auto x = static_cast<unsigned int>(
                 static_cast<std::uint64_t>(points[0].x) * panel.width /
                 sensor.width);
@@ -224,12 +230,12 @@ int main() {
                 static_cast<std::uint64_t>(points[0].y) * panel.height /
                 sensor.height);
             const char key = hit(layout, x, y);
-            if (key != 0) {
+            if (key != 0 && key != held_key) {
+                held_key = key;
                 kalkulator::press(key);
                 if (!draw(display, layout)) return 6;
             }
         }
-        was_down = down;
         if (mm::mcu::delay_ms(poll_ms) != mm::mcu::Status::Ok) return 7;
     }
 }
