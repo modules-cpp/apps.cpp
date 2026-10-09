@@ -21,7 +21,7 @@ file. A local `.env` file is not loaded automatically.
 ## Build all applications
 
 The root `mm.mdy` connects AudioCommander, CHIP-8, FileCommander,
-FunCommander, MIDICommander, clockal, fractals, and kalkulator. From this
+FunCommander, GPIOCommander, MIDICommander, clockal, fractals, and kalkulator. From this
 repository's root, configure and build them
 for Linux SDL:
 
@@ -41,6 +41,9 @@ the RP2350 Touch LCD 2.8 is the initial target. See
 `AudioCommander/README.md` for its touch piano controls.
 MIDICommander adds read-only LittleFS and FAT SD browsing for MIDI file
 playback on the same board; see `MIDICommander/README.md` for format limits.
+GPIOCommander shows and configures the chip's GPIOs, with an ADC
+oscilloscope and a four-lane logic analyzer; see `GPIOCommander/README.md`
+for the pins it reserves on each board.
 
 ## Build and run fractals on Linux
 
@@ -77,3 +80,37 @@ export picotool_DIR=/absolute/path/to/picotool-package
 `picotool` executable. The external build requires this variable regardless of where
 picotool is installed. A failed build does not produce a flashable UF2; fix
 the build error before running flash.
+# ServoCommander
+
+ServoCommander controls the Waveshare Pico Servo Driver through its 16 direct
+Pico GPIO PWM outputs. It reads commands from the selected `mm.stdio` console;
+with the Pico SDK board configuration this is USB CDC stdio.
+
+The output mapping is channel 0–15 to GP0–GP15, following the Waveshare board
+schematic. Each output runs at 50 Hz. Startup commands 1500 us (the nominal
+center pulse) on every available channel.
+
+Connect a serial terminal to the Pico USB CDC port and use these commands:
+
+```text
+help
+list
+set 0 1500
+get 0
+all 1500
+off 0
+off all
+quit
+```
+
+Pulse widths are accepted from 1000 through 2000 microseconds. `get` and `list`
+show the commanded output value held by the application. Standard RC servos
+have no position feedback, so this cannot verify the servo's physical angle.
+`off` releases PWM and stops sending pulses; `quit` leaves current output states
+unchanged.
+
+Servo power is supplied through the driver's servo power input. Use a suitable
+external supply for the servos and connect its ground to the Pico/driver ground;
+do not expect the Pico USB connection to power a bank of servos.
+
+Build and flash using the apps.cpp scripts after configuring the Pico target.
