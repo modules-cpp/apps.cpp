@@ -7,6 +7,7 @@
 
 import mm.fs;
 import mm.fs.local;
+import mm.fs.littlefs;
 
 namespace filecommander {
 namespace {
@@ -127,11 +128,33 @@ mm::fs::Status refresh_tree(unsigned int offset, unsigned int limit) {
 }
 }
 
-mm::fs::Status initialize(bool format_if_blank) {
+mm::fs::Status initialize() {
     if (mounted) return mm::fs::Status::Ok;
-    const auto status = mm::fs::local::mount("/data", {false, format_if_blank});
+    const auto status = mm::fs::local::mount("/data", {false, false});
     if (status == mm::fs::Status::Ok) mounted = true;
     return status;
+}
+
+mm::fs::Status erase_and_format() {
+#if defined(__linux__)
+    return mm::fs::Status::Unsupported;
+#else
+    if (mounted) return mm::fs::Status::Busy;
+    mm::fs::McuFlash flash;
+    mm::fs::FlashGeometry geometry{};
+    auto status = flash.geometry(geometry);
+    if (status != mm::fs::Status::Ok) return status;
+    if (geometry.erase_size == 0 || geometry.erase_count < 2)
+        return mm::fs::Status::Unsupported;
+
+    const auto bytes = static_cast<std::uint64_t>(geometry.erase_size) *
+                       geometry.erase_count;
+    status = flash.erase(0, bytes);
+    if (status != mm::fs::Status::Ok) return status;
+    status = mm::fs::littlefs::format(flash);
+    if (status != mm::fs::Status::Ok) return status;
+    return initialize();
+#endif
 }
 
 void shutdown() {

@@ -41,11 +41,12 @@ underscore and space. The underlying file API supports longer names, but this
 first UI edits up to 24 characters. Deleting a nonempty folder fails safely.
 No copy/move between volumes, binary editor or recursive delete is provided.
 
-The app first mounts without formatting. If Pico flash has an unformatted
-LittleFS region, it shows FORMAT FLASH. Confirming that action formats the
-reserved storage region. Do not confirm if you need to recover existing data.
-A failed mount for any other reason remains visible and does not format the
-device.
+The app first mounts without formatting. If the Pico LittleFS mount reports
+Corrupt, it shows ERASE. Tap ERASE and then YES to erase the entire reserved
+flash region, format it as LittleFS, and mount it. This removes every file in
+that region. The action also works when the region contains nonblank data from
+another filesystem or firmware. Other mount errors remain visible and do not
+trigger an erase. Linux has no flash erase action.
 
 Set `MM_MODULES` to a built modules.cpp installation. From `FileCommander/`,
 for Linux SDL:

@@ -10,6 +10,7 @@ use: mm.fonts
 use: mm.mcu
 use: mm.fs
 use: mm.fs.local
+use: mm.fs.littlefs
 file: main.cpp
 file: files.cpp
 ---
@@ -20,4 +21,5 @@ Touch file manager for the board's local storage. On Pico the local provider is
 littlefs on the reserved internal flash region; on Linux it is the configured
 local directory. The user can navigate, create empty files and folders,
 rename, delete with confirmation, view files as text or hex, and inspect
-volume information.
+volume information. On Pico, a confirmed erase action wipes the reserved flash
+region, formats it as LittleFS, and mounts the new volume.

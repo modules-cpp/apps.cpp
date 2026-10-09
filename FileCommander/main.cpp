@@ -13,7 +13,8 @@ import mm.mcu;
 import mm.touch;
 
 namespace filecommander {
-mm::fs::Status initialize(bool format_if_blank);
+mm::fs::Status initialize();
+mm::fs::Status erase_and_format();
 void shutdown();
 bool ready();
 const char* path();
@@ -188,7 +189,7 @@ bool render_list(Surface frame, const Layout& layout, const State& state) {
         if (!label(frame, "Storage is unavailable", 6, 82) ||
             !label(frame, error_text(state.mount_error), 6, 104)) return false;
         if (state.mount_error == mm::fs::Status::Corrupt) {
-            return button(frame, layout, 1, 0, "FORMAT");
+            return button(frame, layout, 1, 0, "ERASE");
         }
         return true;
     }
@@ -389,7 +390,7 @@ bool render_info(Surface frame, const Layout& layout, const State& state) {
             !info_text(frame, 3, "Wear counts: unavailable") ||
             !info_text(frame, 4, "On-disk rev: unavailable") ||
             !info_number(frame, 5, "Max path: ", mm::fs::max_path, " B") ||
-            !info_text(frame, 6, "Format: confirm only") ||
+            !info_text(frame, 6, "Erase/format: confirm") ||
             !info_text(frame, 7, "REFRESH rereads space")) return false;
     }
     return button(frame, layout, 0, 0, "BACK") &&
@@ -434,8 +435,8 @@ bool render_edit(Surface frame, const Layout& layout, const State& state) {
 
 bool render_confirm(Surface frame, const Layout& layout, const State& state) {
     const bool formatting = state.mode == Mode::FormatConfirm;
-    if (!label(frame, formatting ? "FORMAT FLASH?" : "DELETE ITEM?", 6, 54) ||
-        !label(frame, formatting ? "All files will be lost" :
+    if (!label(frame, formatting ? "ERASE + FORMAT?" : "DELETE ITEM?", 6, 54) ||
+        !label(frame, formatting ? "All flash files lost" :
                filecommander::name(state.selected), 6, 84) ||
         !label(frame, "Tap YES to confirm", 6, 110)) return false;
     return button(frame, layout, 1, 0, "NO") &&
@@ -596,7 +597,7 @@ void action(State& state, const Layout& layout, unsigned int x, unsigned int y) 
             if (column == 0) state.mode = Mode::List;
             else if (column == 2) {
                 const auto status = state.mode == Mode::FormatConfirm ?
-                    filecommander::initialize(true) : filecommander::remove(state.selected);
+                    filecommander::erase_and_format() : filecommander::remove(state.selected);
                 state.mount_error = status;
                 state.message = error_text(status);
                 state.mode = Mode::List;
@@ -712,7 +713,7 @@ int main() {
     const Layout layout{panel.width, panel.height};
     State state{};
     state.rows = layout.rows();
-    state.mount_error = filecommander::initialize(false);
+    state.mount_error = filecommander::initialize();
     state.message = error_text(state.mount_error);
     if (filecommander::ready()) reload(state);
     if (!draw(display, layout, state)) return 4;
