@@ -1,3 +1,5 @@
+#include "player.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +36,8 @@ class Song {
 public:
     enum class Result { Waiting, Event, Done, Invalid };
 
+    [[nodiscard]] const MidiInfo& info() const { return info_; }
+
     [[nodiscard]] bool load(std::span<const std::byte> bytes) {
         data_ = bytes;
         count_ = 0;
@@ -41,6 +45,8 @@ public:
         time_us_ = 0;
         remainder_ = 0;
         tempo_ = 500'000;
+        info_ = {};
+        first_tempo_ = true;
         if (bytes.size() < 14 || !tag(0, "MThd") ||
             be32(4) < 6 || be32(4) > bytes.size() - 8) return false;
         const auto format = be16(8);
@@ -62,7 +68,36 @@ public:
             }
             position += 8u + length;
         }
-        return count_ == declared;
+        if (count_ != declared) return false;
+
+        info_.format = format;
+        info_.tracks = static_cast<unsigned int>(declared);
+        info_.division = division_;
+        info_.file_size = bytes.size();
+        info_.tempo_us = 500'000;
+        info_.bpm = 120;
+        info_.valid = true;
+
+        const auto saved_tracks = tracks_;
+        Event event{};
+        unsigned int notes = 0;
+        for (unsigned int sim_step = 0; sim_step < 200'000; ++sim_step) {
+            const auto res = next(UINT64_MAX, event);
+            if (res == Result::Done || res == Result::Invalid) break;
+            if (res == Result::Event && event.kind == Event::Kind::NoteOn && event.value > 0) {
+                ++notes;
+            }
+        }
+        info_.duration_s = static_cast<unsigned int>(time_us_ / 1'000'000ULL);
+        info_.note_count = notes;
+
+        tracks_ = saved_tracks;
+        tick_ = 0;
+        time_us_ = 0;
+        remainder_ = 0;
+        tempo_ = 500'000;
+
+        return true;
     }
 
     [[nodiscard]] Result next(std::uint64_t elapsed_us, Event& event) {
@@ -152,6 +187,21 @@ private:
                                        (byte(track.pos + 1) << 8) | byte(track.pos + 2);
                     if (tempo == 0) return false;
                     tempo_ = tempo;
+                    if (first_tempo_) {
+                        info_.tempo_us = tempo;
+                        info_.bpm = (60'000'000u + tempo / 2u) / tempo;
+                        first_tempo_ = false;
+                    }
+                } else if ((type == 0x03u || (type == 0x01u && info_.title[0] == '\0')) &&
+                           length > 0 && info_.title[0] == '\0') {
+                    const auto copy_len = length < info_.title.size() - 1 ? length : info_.title.size() - 1;
+                    for (std::size_t i = 0; i < copy_len; ++i) {
+                        const auto c = byte(track.pos + i);
+                        info_.title[i] = (c >= 32 && c <= 126) ? static_cast<char>(c) : ' ';
+                    }
+                    std::size_t end = copy_len;
+                    while (end > 0 && info_.title[end - 1] == ' ') --end;
+                    info_.title[end] = '\0';
                 }
                 track.pos += length;
                 if (type == 0x2fu) {
@@ -194,6 +244,8 @@ private:
     std::uint64_t remainder_ = 0;
     std::uint32_t tempo_ = 500'000;
     unsigned int division_ = 480;
+    MidiInfo info_{};
+    bool first_tempo_ = true;
 };
 
 class Synth {
@@ -463,6 +515,10 @@ bool service() {
         last_error = "Playback complete";
     }
     return true;
+}
+
+const MidiInfo& current_info() {
+    return song.info();
 }
 
 } // namespace midicommander

@@ -1,4 +1,5 @@
 #include "bundled_music.hpp"
+#include "player.hpp"
 
 #include <array>
 #include <cstddef>
@@ -16,16 +17,6 @@ import mm.gfx;
 import mm.mcu;
 import mm.sdcard.socket;
 import mm.touch;
-
-namespace midicommander {
-const char* error();
-bool active();
-bool initialize();
-bool load(std::string_view path);
-bool start();
-void stop();
-bool service();
-}
 
 namespace {
 
@@ -293,12 +284,12 @@ private:
     mm::fs::Status last_source_status_ = mm::fs::Status::NotFound;
 };
 
-[[nodiscard]] bool text(Surface frame, const char* value, unsigned int x,
+[[nodiscard]] bool text(Surface frame, std::string_view value, unsigned int x,
                         unsigned int y, Rgb565 color) {
-    if (value == nullptr || x >= frame.width || y >= frame.height) return true;
+    if (x >= frame.width || y >= frame.height) return true;
     std::array<char8_t, 64> characters{};
     unsigned int count = 0;
-    while (value[count] != 0 && count < characters.size() &&
+    while (count < value.size() && count < characters.size() &&
            (count + 1) * mm::fonts::kMono12.advance <= frame.width - x) {
         const auto raw = static_cast<unsigned char>(value[count]);
         characters[count] = static_cast<char8_t>(raw >= 32 && raw < 127 ? raw : '?');
@@ -334,28 +325,227 @@ private:
     return true;
 }
 
+[[nodiscard]] bool text(Surface frame, const char* value, unsigned int x,
+                        unsigned int y, Rgb565 color) {
+    if (value == nullptr) return true;
+    return text(frame, std::string_view{value}, x, y, color);
+}
+
+void append_uint(std::array<char, 64>& buf, std::size_t& len, std::uint64_t val) {
+    std::array<char, 24> tmp{};
+    std::size_t tlen = 0;
+    do {
+        tmp[tlen++] = static_cast<char>('0' + (val % 10u));
+        val /= 10u;
+    } while (val != 0 && tlen < tmp.size());
+    while (tlen > 0 && len + 1 < buf.size()) {
+        buf[len++] = tmp[--tlen];
+    }
+    buf[len] = '\0';
+}
+
+void append_str(std::array<char, 64>& buf, std::size_t& len, std::string_view str) {
+    for (char c : str) {
+        if (len + 1 >= buf.size()) break;
+        buf[len++] = c;
+    }
+    buf[len] = '\0';
+}
+
+void format_duration(std::array<char, 64>& buf, std::size_t& len, unsigned int total_sec) {
+    const unsigned int mins = total_sec / 60;
+    const unsigned int secs = total_sec % 60;
+    append_uint(buf, len, mins);
+    if (len + 1 < buf.size()) buf[len++] = ':';
+    if (secs < 10 && len + 1 < buf.size()) buf[len++] = '0';
+    append_uint(buf, len, secs);
+}
+
 [[nodiscard]] bool draw(mm::display::Display& display, unsigned int width,
                         unsigned int height, const Browser& browser,
-                        const char* status, bool playing, const char* playing_name) {
+                        const char* status, bool playing, const char* playing_name,
+                        bool showing_info, const char* info_name, const char* info_path) {
     const Surface frame{width, height, 16,
                         std::span<std::byte>{frame_bytes}.first(
                             static_cast<std::size_t>(width) * height * 2u)};
     if (mm::gfx::fill(frame, background) != Status::Ok) return false;
+
+    if (showing_info) {
+        (void)mm::gfx::fill_rectangle(frame, 0, 0, width, 35, panel);
+        if (!text(frame, "MIDI FILE INFO", 7, 10, accent)) return false;
+
+        (void)mm::gfx::fill_rectangle(frame, 5, 40, width - 10, height - 82, panel);
+        const auto& info = midicommander::current_info();
+
+        std::array<char, 64> line{};
+        unsigned int y = 46;
+        constexpr unsigned int step = 19;
+
+        // 1. File Name
+        std::size_t len = 0;
+        append_str(line, len, "File: ");
+        append_str(line, len, info_name != nullptr && info_name[0] != '\0' ? info_name : "(unknown)");
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 2. Title
+        len = 0;
+        append_str(line, len, "Title: ");
+        if (info.title[0] != '\0') {
+            append_str(line, len, info.title.data());
+            if (!text(frame, line.data(), 10, y, accent)) return false;
+        } else {
+            append_str(line, len, "(none)");
+            if (!text(frame, line.data(), 10, y, dim)) return false;
+        }
+        y += step;
+
+        // 3. File Size
+        len = 0;
+        append_str(line, len, "Size: ");
+        append_uint(line, len, info.file_size);
+        append_str(line, len, " bytes");
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 4. SMF Format
+        len = 0;
+        append_str(line, len, "Format: SMF ");
+        append_uint(line, len, info.format);
+        append_str(line, len, info.format == 0 ? " (single)" : " (multi)");
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 5. Tracks
+        len = 0;
+        append_str(line, len, "Tracks: ");
+        append_uint(line, len, info.tracks);
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 6. PPQ Division
+        len = 0;
+        append_str(line, len, "Division: ");
+        append_uint(line, len, info.division);
+        append_str(line, len, " PPQ");
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 7. Tempo
+        len = 0;
+        append_str(line, len, "Tempo: ");
+        append_uint(line, len, info.bpm);
+        append_str(line, len, " BPM (");
+        append_uint(line, len, info.tempo_us);
+        append_str(line, len, " us)");
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 8. Duration
+        len = 0;
+        append_str(line, len, "Duration: ");
+        format_duration(line, len, info.duration_s);
+        append_str(line, len, " (");
+        append_uint(line, len, info.duration_s);
+        append_str(line, len, "s)");
+        if (!text(frame, line.data(), 10, y, accent)) return false;
+        y += step;
+
+        // 9. Notes
+        len = 0;
+        append_str(line, len, "Notes: ");
+        append_uint(line, len, info.note_count);
+        append_str(line, len, " events");
+        if (!text(frame, line.data(), 10, y, white)) return false;
+        y += step;
+
+        // 10. Status / State
+        len = 0;
+        append_str(line, len, "State: ");
+        append_str(line, len, playing ? "Playing" : "Ready to play");
+        if (!text(frame, line.data(), 10, y, playing ? accent : dim)) return false;
+        y += step;
+
+        // 11. Full Path
+        len = 0;
+        append_str(line, len, "Path: ");
+        append_str(line, len, info_path != nullptr ? info_path : "");
+        if (!text(frame, line.data(), 10, y, dim)) return false;
+
+        // Bottom action buttons:
+        // Left: PLAY / STOP (selected_row)
+        // Right: BACK (panel)
+        const auto btn_y = height - 34;
+        const auto half = width / 2;
+        (void)mm::gfx::fill_rectangle(frame, 5, btn_y, half - 8, 27, selected_row);
+        if (!text(frame, playing ? "STOP" : "PLAY", playing ? half / 2 - 14 : half / 2 - 14, btn_y + 8, white)) return false;
+
+        (void)mm::gfx::fill_rectangle(frame, half + 3, btn_y, half - 8, 27, panel);
+        if (!text(frame, "BACK", half + half / 2 - 14, btn_y + 8, white)) return false;
+
+        return mm::gfx::write(display, frame, 0, 0) == Status::Ok &&
+               display.refresh(mm::display::Refresh::Full) == Status::Ok;
+    }
+
     (void)mm::gfx::fill_rectangle(frame, 0, 0, width, 35, panel);
     if (!text(frame, "MIDI COMMANDER", 7, 10, accent)) return false;
-    (void)mm::gfx::fill_rectangle(frame, width - 71, 38, 66, 29, panel);
-    if (!text(frame, browser.on_sd() ? "TO LFS" : "TO SD", width - 68, 47,
-              white)) return false;
-    if (!text(frame, browser.path(), 6, 45, dim)) return false;
 
     if (playing) {
-        (void)mm::gfx::fill_rectangle(frame, 8, 86, width - 16, 84, panel);
-        if (!text(frame, "PLAYING", 18, 99, accent) ||
-            !text(frame, playing_name, 18, 130, white)) return false;
-        (void)mm::gfx::fill_rectangle(frame, 8, height - 58, width - 16, 45,
-                                      selected_row);
-        if (!text(frame, "STOP", width / 2 - 15, height - 42, white)) return false;
+        (void)mm::gfx::fill_rectangle(frame, 8, 48, width - 16, 175, panel);
+        if (!text(frame, "NOW PLAYING", 16, 56, accent) ||
+            !text(frame, playing_name, 16, 78, white)) return false;
+
+        const auto& info = midicommander::current_info();
+        std::array<char, 64> line{};
+        unsigned int py = 102;
+        constexpr unsigned int pstep = 20;
+
+        if (info.title[0] != '\0') {
+            std::size_t len = 0;
+            append_str(line, len, "Title: ");
+            append_str(line, len, info.title.data());
+            if (!text(frame, line.data(), 16, py, accent)) return false;
+            py += pstep;
+        }
+
+        std::size_t len = 0;
+        append_str(line, len, "SMF ");
+        append_uint(line, len, info.format);
+        append_str(line, len, " | ");
+        append_uint(line, len, info.tracks);
+        append_str(line, len, " trk | ");
+        append_uint(line, len, info.bpm);
+        append_str(line, len, " BPM");
+        if (!text(frame, line.data(), 16, py, dim)) return false;
+        py += pstep;
+
+        len = 0;
+        append_str(line, len, "Length: ");
+        format_duration(line, len, info.duration_s);
+        append_str(line, len, " | ");
+        append_uint(line, len, info.note_count);
+        append_str(line, len, " notes");
+        if (!text(frame, line.data(), 16, py, white)) return false;
+        py += pstep;
+
+        len = 0;
+        append_str(line, len, "PPQ: ");
+        append_uint(line, len, info.division);
+        append_str(line, len, " | 8-Voice Piano");
+        if (!text(frame, line.data(), 16, py, dim)) return false;
+
+        const auto stop_btn_y = height - 55;
+        (void)mm::gfx::fill_rectangle(frame, 8, stop_btn_y, width - 96, 42, selected_row);
+        if (!text(frame, "STOP", (width - 96) / 2 - 14, stop_btn_y + 14, white)) return false;
+
+        (void)mm::gfx::fill_rectangle(frame, width - 82, stop_btn_y, 74, 42, panel);
+        if (!text(frame, "INFO", width - 82 + 23, stop_btn_y + 14, white)) return false;
     } else {
+        (void)mm::gfx::fill_rectangle(frame, width - 71, 38, 66, 29, panel);
+        if (!text(frame, browser.on_sd() ? "TO LFS" : "TO SD", width - 68, 47,
+                  white)) return false;
+        if (!text(frame, browser.path(), 6, 45, dim)) return false;
+
         for (unsigned int i = 0; i < page_size; ++i) {
             const auto* entry = browser.entry(i);
             const unsigned int y = 73 + i * 25;
@@ -376,12 +566,17 @@ private:
             !text(frame, "NEXT", third + 10, controls_y + 8, white) ||
             !text(frame, "UP", 2 * third + 12, controls_y + 8, white))
             return false;
-        (void)mm::gfx::fill_rectangle(frame, 5, height - 34, width - 10, 27,
-                                      selected_row);
-        if (!text(frame, "OPEN / PLAY", width / 2 - 37, height - 26, white))
+
+        const auto bottom_y = height - 34;
+        (void)mm::gfx::fill_rectangle(frame, 5, bottom_y, width - 86, 27, selected_row);
+        if (!text(frame, "OPEN / PLAY", (width - 86) / 2 - 37, bottom_y + 8, white))
+            return false;
+
+        (void)mm::gfx::fill_rectangle(frame, width - 76, bottom_y, 71, 27, panel);
+        if (!text(frame, "INFO", width - 76 + 21, bottom_y + 8, white))
             return false;
     }
-    if (!text(frame, status, 6, height - (playing ? 78 : 82), accent)) return false;
+    if (!text(frame, status, 6, height - (playing ? 68 : 82), accent)) return false;
     return mm::gfx::write(display, frame, 0, 0) == Status::Ok &&
            display.refresh(mm::display::Refresh::Full) == Status::Ok;
 }
@@ -417,6 +612,10 @@ int main() {
     const bool storage_ok = browser.initialize();
     const bool audio_ok = midicommander::initialize();
 
+    bool showing_info = false;
+    std::array<char, mm::fs::max_name + 1> info_name{};
+    std::array<char, mm::fs::max_path + 1> info_path{};
+
     const char* status = "Select a MIDI file";
     if (!storage_ok) {
         status = browser.source_error();
@@ -425,7 +624,8 @@ int main() {
     }
     const char* playing_name = "";
     (void)draw(display, panel_geometry.width, panel_geometry.height, browser,
-               status, false, playing_name);
+               status, false, playing_name,
+               showing_info, info_name.data(), info_path.data());
 
     bool was_touched = false;
     unsigned long last_touch_ms = 0;
@@ -439,13 +639,15 @@ int main() {
             status = midicommander::error();
             playing_name = "";
             (void)draw(display, panel_geometry.width, panel_geometry.height,
-                       browser, status, false, playing_name);
+                       browser, status, false, playing_name,
+                       showing_info, info_name.data(), info_path.data());
         }
         if (!midicommander::active() && playing_name[0] != 0) {
             playing_name = "";
             status = midicommander::error();
             (void)draw(display, panel_geometry.width, panel_geometry.height,
-                       browser, status, false, playing_name);
+                       browser, status, false, playing_name,
+                       showing_info, info_name.data(), info_path.data());
         }
 
         unsigned long now_ms = 0;
@@ -475,20 +677,65 @@ int main() {
             touched = true;
         }
         if (touched && !was_touched) {
-            if (midicommander::active()) {
+            if (showing_info) {
+                if (last_y >= panel_geometry.height - 34) {
+                    const auto half = panel_geometry.width / 2;
+                    if (last_x < half) {
+                        // Left button: STOP (if active) or PLAY (if inactive)
+                        if (midicommander::active()) {
+                            midicommander::stop();
+                            playing_name = "";
+                            status = "Stopped";
+                            showing_info = false;
+                            (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                       browser, status, false, playing_name,
+                                       showing_info, info_name.data(), info_path.data());
+                        } else if (info_name[0] != '\0') {
+                            playing_name = info_name.data();
+                            status = "Piano playback";
+                            showing_info = false;
+                            (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                       browser, status, true, playing_name,
+                                       showing_info, info_name.data(), info_path.data());
+                            if (!midicommander::start()) {
+                                playing_name = "";
+                                status = midicommander::error();
+                                (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                           browser, status, false, playing_name,
+                                           showing_info, info_name.data(), info_path.data());
+                            }
+                        }
+                    } else {
+                        // Right button: BACK
+                        showing_info = false;
+                        (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                   browser, status, midicommander::active(), playing_name,
+                                   showing_info, info_name.data(), info_path.data());
+                    }
+                }
+            } else if (midicommander::active()) {
                 if (last_y >= panel_geometry.height - 58) {
-                    midicommander::stop();
-                    playing_name = "";
-                    status = "Stopped";
-                    (void)draw(display, panel_geometry.width, panel_geometry.height,
-                               browser, status, false, playing_name);
+                    if (last_x < panel_geometry.width - 82) {
+                        midicommander::stop();
+                        playing_name = "";
+                        status = "Stopped";
+                        (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                   browser, status, false, playing_name,
+                                   showing_info, info_name.data(), info_path.data());
+                    } else {
+                        showing_info = true;
+                        (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                   browser, status, true, playing_name,
+                                   showing_info, info_name.data(), info_path.data());
+                    }
                 }
             } else if (last_y >= 38 && last_y < 67 &&
                        last_x >= panel_geometry.width - 71) {
                 status = browser.switch_source() ? "Source changed" :
                                                     browser.source_error();
                 (void)draw(display, panel_geometry.width, panel_geometry.height,
-                           browser, status, false, playing_name);
+                           browser, status, false, playing_name,
+                           showing_info, info_name.data(), info_path.data());
             } else if (last_y >= 73 && last_y < 73 + page_size * 25) {
                 const auto tapped_row = (last_y - 73) / 25;
                 if (browser.selected_index() == static_cast<int>(tapped_row)) {
@@ -498,30 +745,37 @@ int main() {
                         if (browser.open_selected()) status = "Folder opened";
                         else status = "Cannot open folder";
                         (void)draw(display, panel_geometry.width, panel_geometry.height,
-                                   browser, status, false, playing_name);
+                                   browser, status, false, playing_name,
+                                   showing_info, info_name.data(), info_path.data());
                     } else if (entry != nullptr) {
                         if (midicommander::load(entry->path.data())) {
+                            info_name = entry->name;
+                            info_path = entry->path;
                             playing_name = entry->name.data();
                             status = "Piano playback";
                             (void)draw(display, panel_geometry.width, panel_geometry.height,
-                                       browser, status, true, playing_name);
+                                       browser, status, true, playing_name,
+                                       showing_info, info_name.data(), info_path.data());
                             if (!midicommander::start()) {
                                 playing_name = "";
                                 status = midicommander::error();
                                 (void)draw(display, panel_geometry.width,
                                            panel_geometry.height, browser, status,
-                                           false, playing_name);
+                                           false, playing_name,
+                                           showing_info, info_name.data(), info_path.data());
                             }
                         } else {
                             status = midicommander::error();
                             (void)draw(display, panel_geometry.width, panel_geometry.height,
-                                       browser, status, false, playing_name);
+                                       browser, status, false, playing_name,
+                                       showing_info, info_name.data(), info_path.data());
                         }
                     }
                 } else {
                     browser.select(tapped_row);
                     (void)draw(display, panel_geometry.width, panel_geometry.height,
-                               browser, status, false, playing_name);
+                               browser, status, false, playing_name,
+                               showing_info, info_name.data(), info_path.data());
                 }
             } else if (last_y >= panel_geometry.height - 66 &&
                        last_y < panel_geometry.height - 38) {
@@ -533,33 +787,73 @@ int main() {
                 if (changed) {
                     (void)draw(display, panel_geometry.width,
                                panel_geometry.height, browser, status,
-                               false, playing_name);
+                               false, playing_name,
+                               showing_info, info_name.data(), info_path.data());
                 }
             } else if (last_y >= panel_geometry.height - 34) {
-                const auto* entry = browser.selected();
-                if (entry != nullptr && entry->directory) {
-                    if (browser.open_selected()) status = "Folder opened";
-                    else status = "Cannot open folder";
-                    (void)draw(display, panel_geometry.width, panel_geometry.height,
-                               browser, status, false, playing_name);
-                } else if (entry != nullptr) {
-                    if (midicommander::load(entry->path.data())) {
-                        playing_name = entry->name.data();
-                        status = "Piano playback";
-                        // A full display transfer must finish before audio starts.
+                if (last_x < panel_geometry.width - 76) {
+                    // OPEN / PLAY
+                    const auto* entry = browser.selected();
+                    if (entry != nullptr && entry->directory) {
+                        if (browser.open_selected()) status = "Folder opened";
+                        else status = "Cannot open folder";
                         (void)draw(display, panel_geometry.width, panel_geometry.height,
-                                   browser, status, true, playing_name);
-                        if (!midicommander::start()) {
-                            playing_name = "";
+                                   browser, status, false, playing_name,
+                                   showing_info, info_name.data(), info_path.data());
+                    } else if (entry != nullptr) {
+                        if (midicommander::load(entry->path.data())) {
+                            info_name = entry->name;
+                            info_path = entry->path;
+                            playing_name = entry->name.data();
+                            status = "Piano playback";
+                            (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                       browser, status, true, playing_name,
+                                       showing_info, info_name.data(), info_path.data());
+                            if (!midicommander::start()) {
+                                playing_name = "";
+                                status = midicommander::error();
+                                (void)draw(display, panel_geometry.width,
+                                           panel_geometry.height, browser, status,
+                                           false, playing_name,
+                                           showing_info, info_name.data(), info_path.data());
+                            }
+                        } else {
                             status = midicommander::error();
-                            (void)draw(display, panel_geometry.width,
-                                       panel_geometry.height, browser, status,
-                                       false, playing_name);
+                            (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                       browser, status, false, playing_name,
+                                       showing_info, info_name.data(), info_path.data());
+                        }
+                    }
+                } else {
+                    // INFO button
+                    const auto* entry = browser.selected();
+                    if (entry != nullptr) {
+                        if (entry->directory) {
+                            status = "Select a MIDI file";
+                            (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                       browser, status, false, playing_name,
+                                       showing_info, info_name.data(), info_path.data());
+                        } else {
+                            if (midicommander::load(entry->path.data())) {
+                                info_name = entry->name;
+                                info_path = entry->path;
+                                showing_info = true;
+                                status = "Ready to play";
+                                (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                           browser, status, false, playing_name,
+                                           showing_info, info_name.data(), info_path.data());
+                            } else {
+                                status = midicommander::error();
+                                (void)draw(display, panel_geometry.width, panel_geometry.height,
+                                           browser, status, false, playing_name,
+                                           showing_info, info_name.data(), info_path.data());
+                            }
                         }
                     } else {
-                        status = midicommander::error();
+                        status = "Select a file first";
                         (void)draw(display, panel_geometry.width, panel_geometry.height,
-                                   browser, status, false, playing_name);
+                                   browser, status, false, playing_name,
+                                   showing_info, info_name.data(), info_path.data());
                     }
                 }
             }
