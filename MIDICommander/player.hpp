@@ -23,6 +23,7 @@ const char* error();
 bool active();
 bool initialize();
 bool load(std::string_view path);
+bool load_bundled(std::size_t index);
 bool start();
 void stop();
 bool service();

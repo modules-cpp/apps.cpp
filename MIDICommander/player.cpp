@@ -1,4 +1,5 @@
 #include "player.hpp"
+#include "bundled_music.hpp"
 
 #include <array>
 #include <cstddef>
@@ -422,7 +423,39 @@ bool initialize() {
     return false;
 }
 
+bool load_bundled(std::size_t index) {
+    constexpr std::size_t count = sizeof(bundled_songs) / sizeof(bundled_songs[0]);
+    if (index >= count) {
+        last_error = "Invalid song index";
+        return false;
+    }
+    playing = false;
+    synth().stop();
+    const auto& song_def = bundled_songs[index];
+    if (!song.load(std::as_bytes(song_def.data))) {
+        last_error = "Unsupported/bad MIDI";
+        return false;
+    }
+    last_error = "Ready to play";
+    return true;
+}
+
 bool load(std::string_view path) {
+    if (path.starts_with("builtin:")) {
+        std::size_t idx = 0;
+        for (std::size_t i = 8; i < path.size(); ++i) {
+            if (path[i] >= '0' && path[i] <= '9') {
+                idx = idx * 10 + static_cast<std::size_t>(path[i] - '0');
+            }
+        }
+        return load_bundled(idx);
+    }
+    constexpr std::size_t count = sizeof(bundled_songs) / sizeof(bundled_songs[0]);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (path == bundled_songs[i].filename) {
+            return load_bundled(i);
+        }
+    }
     playing = false;
     synth().stop();
     mm::fs::File file;

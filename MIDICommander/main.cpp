@@ -2,6 +2,7 @@
 #include "player.hpp"
 
 #include <array>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -26,7 +27,7 @@ using mm::gfx::Surface;
 
 constexpr unsigned int maximum_width = 240;
 constexpr unsigned int maximum_height = 320;
-constexpr unsigned int page_size = 6;
+constexpr unsigned int maximum_page_size = 8;
 constexpr unsigned int text_buffer_size = 2048;
 std::array<std::byte, maximum_width * maximum_height * 2u> frame_bytes{};
 std::array<std::byte, text_buffer_size> text_bits{};
@@ -65,6 +66,11 @@ public:
         if (local_) (void)mm::fs::local::unmount("/data");
     }
 
+    void set_page_size(unsigned int ps) {
+        page_size_ = ps > maximum_page_size ? maximum_page_size : (ps > 0 ? ps : 1);
+    }
+    [[nodiscard]] unsigned int page_size() const { return page_size_; }
+
     [[nodiscard]] bool initialize() {
         mount_local();
         mount_sd();
@@ -74,9 +80,8 @@ public:
             set_root(true);
         } else {
             set_root(false);
-            last_source_sd_ = true;
-            last_source_status_ = sd_status_;
-            return false;
+            last_source_sd_ = false;
+            last_source_status_ = local_status_;
         }
         if (refresh()) return true;
         if (!on_sd_ && sd_) {
@@ -85,7 +90,7 @@ public:
         }
         last_source_sd_ = on_sd_;
         last_source_status_ = directory_status_;
-        return false;
+        return shown_ > 0;
     }
 
     [[nodiscard]] bool switch_source() {
@@ -120,7 +125,7 @@ public:
     }
 
     [[nodiscard]] const char* source_error() const {
-        if (!last_source_sd_) return "LittleFS unavailable";
+        if (!last_source_sd_) return local_ ? "No MIDI files in /data" : "LittleFS unavailable";
         switch (last_source_status_) {
             case mm::fs::Status::Corrupt: return "SD needs FAT16/32";
             case mm::fs::Status::TransportError: return "SD card I/O error";
@@ -139,45 +144,66 @@ public:
         selected_ = -1;
         mm::fs::Directory directory;
         directory_status_ = mm::fs::open_directory(path_.data(), directory);
-        if (directory_status_ != mm::fs::Status::Ok)
-            return false;
-        std::array<char, mm::fs::max_name + 1> name{};
-        unsigned int position = 0;
-        for (;;) {
-            std::size_t length = 0;
-            mm::fs::Stat stat{};
-            bool done = false;
-            const auto result = directory.next(name, length, stat, done);
-            if (result != mm::fs::Status::Ok) {
-                directory_status_ = result;
-                return false;
+        if (directory_status_ == mm::fs::Status::Ok) {
+            std::array<char, mm::fs::max_name + 1> name{};
+            unsigned int position = 0;
+            for (;;) {
+                std::size_t length = 0;
+                mm::fs::Stat stat{};
+                bool done = false;
+                const auto result = directory.next(name, length, stat, done);
+                if (result != mm::fs::Status::Ok) {
+                    directory_status_ = result;
+                    break;
+                }
+                if (done) break;
+                if (length == 0 || name[0] == '.') continue;
+                if (stat.kind != mm::fs::Kind::Directory &&
+                    (stat.kind != mm::fs::Kind::File ||
+                     !midi_name(std::string_view{name.data(), length}))) continue;
+                if (position++ < offset_) continue;
+                if (shown_ == page_size_) { more_ = true; break; }
+                auto& entry = entries_[shown_];
+                if (!join(std::string_view{name.data(), length}, entry.path)) continue;
+                std::memcpy(entry.name.data(), name.data(), length);
+                entry.name[length] = 0;
+                entry.directory = stat.kind == mm::fs::Kind::Directory;
+                ++shown_;
             }
-            if (done) break;
-            if (length == 0 || name[0] == '.') continue;
-            if (stat.kind != mm::fs::Kind::Directory &&
-                (stat.kind != mm::fs::Kind::File ||
-                 !midi_name(std::string_view{name.data(), length}))) continue;
-            if (position++ < offset_) continue;
-            if (shown_ == page_size) { more_ = true; break; }
-            auto& entry = entries_[shown_];
-            if (!join(std::string_view{name.data(), length}, entry.path)) continue;
-            std::memcpy(entry.name.data(), name.data(), length);
-            entry.name[length] = 0;
-            entry.directory = stat.kind == mm::fs::Kind::Directory;
-            ++shown_;
+            (void)directory.close();
         }
-        directory_status_ = directory.close();
-        return directory_status_ == mm::fs::Status::Ok;
+
+        // If at /data and no files were shown (e.g. unmounted, unformatted, or empty),
+        // show built-in bundled songs so the app is always functional!
+        if (shown_ == 0 && !on_sd_ && std::strcmp(path_.data(), "/data") == 0) {
+            constexpr std::size_t bcount = sizeof(midicommander::bundled_songs) / sizeof(midicommander::bundled_songs[0]);
+            for (std::size_t i = offset_; i < bcount && shown_ < page_size_; ++i) {
+                auto& entry = entries_[shown_];
+                const auto& bsong = midicommander::bundled_songs[i];
+                const auto name_len = bsong.filename.size();
+                std::memcpy(entry.name.data(), bsong.filename.data(), name_len);
+                entry.name[name_len] = '\0';
+                snprintf(entry.path.data(), entry.path.size(), "builtin:%u", static_cast<unsigned int>(i));
+                entry.directory = false;
+                ++shown_;
+            }
+            if (offset_ + shown_ < bcount) {
+                more_ = true;
+            }
+            directory_status_ = mm::fs::Status::Ok;
+        }
+
+        return shown_ > 0 || directory_status_ == mm::fs::Status::Ok;
     }
 
     [[nodiscard]] bool next_page() {
         if (!more_) return false;
-        offset_ += page_size;
+        offset_ += page_size_;
         return refresh();
     }
     [[nodiscard]] bool previous_page() {
         if (offset_ == 0) return false;
-        offset_ = offset_ >= page_size ? offset_ - page_size : 0;
+        offset_ = offset_ >= page_size_ ? offset_ - page_size_ : 0;
         return refresh();
     }
     [[nodiscard]] bool up() {
@@ -267,7 +293,7 @@ private:
         return true;
     }
 
-    std::array<Entry, page_size> entries_{};
+    std::array<Entry, maximum_page_size> entries_{};
     std::array<char, mm::fs::max_path + 1> path_{};
     unsigned int shown_ = 0;
     unsigned int offset_ = 0;
@@ -282,6 +308,7 @@ private:
     mm::fs::Status sd_status_ = mm::fs::Status::NotFound;
     mm::fs::Status directory_status_ = mm::fs::Status::NotFound;
     mm::fs::Status last_source_status_ = mm::fs::Status::NotFound;
+    unsigned int page_size_ = 6;
 };
 
 [[nodiscard]] bool text(Surface frame, std::string_view value, unsigned int x,
@@ -370,7 +397,108 @@ void format_duration(std::array<char, 64>& buf, std::size_t& len, unsigned int t
                             static_cast<std::size_t>(width) * height * 2u)};
     if (mm::gfx::fill(frame, background) != Status::Ok) return false;
 
+    const bool compact = height < 280u;
+
     if (showing_info) {
+        if (compact) {
+            (void)mm::gfx::fill_rectangle(frame, 0, 0, width, 24, panel);
+            if (!text(frame, "MIDI FILE INFO", 7, 6, accent)) return false;
+
+            (void)mm::gfx::fill_rectangle(frame, 5, 26, width - 10, 172, panel);
+            const auto& info = midicommander::current_info();
+
+            std::array<char, 64> line{};
+            unsigned int y = 30;
+            constexpr unsigned int step = 17;
+
+            // 1. File
+            std::size_t len = 0;
+            append_str(line, len, "File: ");
+            append_str(line, len, info_name != nullptr && info_name[0] != '\0' ? info_name : "(unknown)");
+            if (!text(frame, line.data(), 9, y, white)) return false;
+            y += step;
+
+            // 2. Title
+            len = 0;
+            append_str(line, len, "Title: ");
+            if (info.title[0] != '\0') {
+                append_str(line, len, info.title.data());
+                if (!text(frame, line.data(), 9, y, accent)) return false;
+            } else {
+                append_str(line, len, "(none)");
+                if (!text(frame, line.data(), 9, y, dim)) return false;
+            }
+            y += step;
+
+            // 3. Format & Size
+            len = 0;
+            append_str(line, len, "SMF ");
+            append_uint(line, len, info.format);
+            append_str(line, len, " | ");
+            append_uint(line, len, info.file_size);
+            append_str(line, len, " bytes");
+            if (!text(frame, line.data(), 9, y, white)) return false;
+            y += step;
+
+            // 4. Tracks & PPQ
+            len = 0;
+            append_str(line, len, "Tracks: ");
+            append_uint(line, len, info.tracks);
+            append_str(line, len, " | ");
+            append_uint(line, len, info.division);
+            append_str(line, len, " PPQ");
+            if (!text(frame, line.data(), 9, y, white)) return false;
+            y += step;
+
+            // 5. Tempo
+            len = 0;
+            append_str(line, len, "Tempo: ");
+            append_uint(line, len, info.bpm);
+            append_str(line, len, " BPM (");
+            append_uint(line, len, info.tempo_us);
+            append_str(line, len, " us)");
+            if (!text(frame, line.data(), 9, y, white)) return false;
+            y += step;
+
+            // 6. Duration & Notes
+            len = 0;
+            append_str(line, len, "Length: ");
+            format_duration(line, len, info.duration_s);
+            append_str(line, len, " | ");
+            append_uint(line, len, info.note_count);
+            append_str(line, len, " notes");
+            if (!text(frame, line.data(), 9, y, accent)) return false;
+            y += step;
+
+            // 7. State & Volume
+            len = 0;
+            append_str(line, len, playing ? "Playing" : "Ready");
+            append_str(line, len, " | Vol: ");
+            append_uint(line, len, midicommander::volume());
+            append_str(line, len, "%");
+            if (!text(frame, line.data(), 9, y, playing ? accent : dim)) return false;
+            y += step;
+
+            // 8. Path
+            len = 0;
+            append_str(line, len, "Path: ");
+            append_str(line, len, info_path != nullptr ? info_path : "");
+            if (!text(frame, line.data(), 9, y, dim)) return false;
+
+            // Bottom action buttons
+            const auto btn_y = 204u;
+            const auto half = width / 2;
+            (void)mm::gfx::fill_rectangle(frame, 5, btn_y, half - 8, 30, selected_row);
+            if (!text(frame, playing ? "STOP" : "PLAY", half / 2 - 14, btn_y + 9, white)) return false;
+
+            (void)mm::gfx::fill_rectangle(frame, half + 3, btn_y, half - 8, 30, panel);
+            if (!text(frame, "BACK", half + half / 2 - 14, btn_y + 9, white)) return false;
+
+            return mm::gfx::write(display, frame, 0, 0) == Status::Ok &&
+                   display.refresh(mm::display::Refresh::Full) == Status::Ok;
+        }
+
+        // Tall screen
         (void)mm::gfx::fill_rectangle(frame, 0, 0, width, 35, panel);
         if (!text(frame, "MIDI FILE INFO", 7, 10, accent)) return false;
 
@@ -481,8 +609,6 @@ void format_duration(std::array<char, 64>& buf, std::size_t& len, unsigned int t
         if (!text(frame, line.data(), 10, y, dim)) return false;
 
         // Bottom action buttons:
-        // Left: PLAY / STOP (selected_row)
-        // Right: BACK (panel)
         const auto btn_y = height - 34;
         const auto half = width / 2;
         (void)mm::gfx::fill_rectangle(frame, 5, btn_y, half - 8, 27, selected_row);
@@ -495,125 +621,258 @@ void format_duration(std::array<char, 64>& buf, std::size_t& len, unsigned int t
                display.refresh(mm::display::Refresh::Full) == Status::Ok;
     }
 
-    (void)mm::gfx::fill_rectangle(frame, 0, 0, width, 35, panel);
-    if (!text(frame, "MIDI COMMANDER", 7, 10, accent)) return false;
+    if (compact) {
+        (void)mm::gfx::fill_rectangle(frame, 0, 0, width, 24, panel);
+        if (!text(frame, "MIDI COMMANDER", 7, 6, accent)) return false;
+    } else {
+        (void)mm::gfx::fill_rectangle(frame, 0, 0, width, 35, panel);
+        if (!text(frame, "MIDI COMMANDER", 7, 10, accent)) return false;
+    }
 
     if (playing) {
-        // Song Info Card: y = 42 to 196
-        (void)mm::gfx::fill_rectangle(frame, 8, 42, width - 16, 154, panel);
-        if (!text(frame, "NOW PLAYING", 16, 50, accent) ||
-            !text(frame, playing_name, 16, 72, white)) return false;
+        if (compact) {
+            // Song Info Card: y = 26 to 132 (h = 106)
+            (void)mm::gfx::fill_rectangle(frame, 6, 26, width - 12, 106, panel);
+            if (!text(frame, "NOW PLAYING", 12, 29, accent) ||
+                !text(frame, playing_name, 12, 45, white)) return false;
 
-        const auto& info = midicommander::current_info();
-        std::array<char, 64> line{};
-        unsigned int py = 94;
-        constexpr unsigned int pstep = 19;
+            const auto& info = midicommander::current_info();
+            std::array<char, 64> line{};
+            unsigned int py = 62;
+            constexpr unsigned int pstep = 16;
 
-        if (info.title[0] != '\0') {
-            std::size_t len = 0;
-            append_str(line, len, "Title: ");
-            append_str(line, len, info.title.data());
-            if (!text(frame, line.data(), 16, py, accent)) return false;
-            py += pstep;
-        }
-
-        std::size_t len = 0;
-        append_str(line, len, "SMF ");
-        append_uint(line, len, info.format);
-        append_str(line, len, " | ");
-        append_uint(line, len, info.tracks);
-        append_str(line, len, " trk | ");
-        append_uint(line, len, info.bpm);
-        append_str(line, len, " BPM");
-        if (!text(frame, line.data(), 16, py, dim)) return false;
-        py += pstep;
-
-        len = 0;
-        append_str(line, len, "Length: ");
-        format_duration(line, len, info.duration_s);
-        append_str(line, len, " | ");
-        append_uint(line, len, info.note_count);
-        append_str(line, len, " notes");
-        if (!text(frame, line.data(), 16, py, white)) return false;
-        py += pstep;
-
-        len = 0;
-        append_str(line, len, "PPQ: ");
-        append_uint(line, len, info.division);
-        append_str(line, len, " | 8-Voice Piano");
-        if (!text(frame, line.data(), 16, py, dim)) return false;
-
-        // Volume Control Panel: y = 202 to 246 (height 44)
-        (void)mm::gfx::fill_rectangle(frame, 8, 202, width - 16, 44, panel);
-
-        // VOL- button (x = 12 to 58)
-        (void)mm::gfx::fill_rectangle(frame, 12, 206, 46, 36, selected_row);
-        if (!text(frame, "VOL-", 21, 217, white)) return false;
-
-        // VOL+ button (x = width - 58 to width - 12)
-        (void)mm::gfx::fill_rectangle(frame, width - 58, 206, 46, 36, selected_row);
-        if (!text(frame, "VOL+", width - 49, 217, white)) return false;
-
-        // Center Volume text and gauge (x = 62 to width - 62 = 178)
-        const auto vol = midicommander::volume();
-        std::array<char, 64> vol_buf{};
-        std::size_t vlen = 0;
-        append_str(vol_buf, vlen, "VOL: ");
-        append_uint(vol_buf, vlen, vol);
-        append_str(vol_buf, vlen, "%");
-        if (!text(frame, vol_buf.data(), 89, 210, accent)) return false;
-
-        // Gauge bar: x = 66, y = 230, width = 108, height = 9
-        (void)mm::gfx::fill_rectangle(frame, 66, 230, 108, 9, background);
-        if (vol > 0) {
-            const unsigned int bar_w = (108u * vol) / 100u;
-            (void)mm::gfx::fill_rectangle(frame, 66, 230, bar_w > 108u ? 108u : bar_w, 9, accent);
-        }
-
-        // Bottom buttons: STOP (width 142) and INFO (width 74)
-        const auto stop_btn_y = height - 46;
-        (void)mm::gfx::fill_rectangle(frame, 8, stop_btn_y, width - 96, 38, selected_row);
-        if (!text(frame, "STOP", (width - 96) / 2 - 14, stop_btn_y + 12, white)) return false;
-
-        (void)mm::gfx::fill_rectangle(frame, width - 82, stop_btn_y, 74, 38, panel);
-        if (!text(frame, "INFO", width - 82 + 23, stop_btn_y + 12, white)) return false;
-    } else {
-        (void)mm::gfx::fill_rectangle(frame, width - 71, 38, 66, 29, panel);
-        if (!text(frame, browser.on_sd() ? "TO LFS" : "TO SD", width - 68, 47,
-                  white)) return false;
-        if (!text(frame, browser.path(), 6, 45, dim)) return false;
-
-        for (unsigned int i = 0; i < page_size; ++i) {
-            const auto* entry = browser.entry(i);
-            const unsigned int y = 73 + i * 25;
-            (void)mm::gfx::fill_rectangle(frame, 5, y, width - 10, 23,
-                browser.selected_index() == static_cast<int>(i) ? selected_row : row);
-            if (entry != nullptr) {
-                if (!text(frame, entry->directory ? "[D]" : "[M]", 8, y + 5,
-                          entry->directory ? accent : dim) ||
-                    !text(frame, entry->name.data(), 40, y + 5, white)) return false;
+            if (info.title[0] != '\0') {
+                std::size_t len = 0;
+                append_str(line, len, "Title: ");
+                append_str(line, len, info.title.data());
+                if (!text(frame, line.data(), 12, py, accent)) return false;
+                py += pstep;
             }
+
+            std::size_t len = 0;
+            append_str(line, len, "SMF ");
+            append_uint(line, len, info.format);
+            append_str(line, len, " | ");
+            append_uint(line, len, info.tracks);
+            append_str(line, len, " trk | ");
+            append_uint(line, len, info.bpm);
+            append_str(line, len, " BPM");
+            if (!text(frame, line.data(), 12, py, dim)) return false;
+            py += pstep;
+
+            len = 0;
+            append_str(line, len, "Length: ");
+            format_duration(line, len, info.duration_s);
+            append_str(line, len, " | ");
+            append_uint(line, len, info.note_count);
+            append_str(line, len, " notes");
+            if (!text(frame, line.data(), 12, py, white)) return false;
+            py += pstep;
+
+            if (py < 120) {
+                len = 0;
+                append_str(line, len, "PPQ: ");
+                append_uint(line, len, info.division);
+                append_str(line, len, " | 8-Voice Piano");
+                if (!text(frame, line.data(), 12, py, dim)) return false;
+            }
+
+            // Volume Control Panel: y = 135 to 173 (height 38)
+            (void)mm::gfx::fill_rectangle(frame, 6, 135, width - 12, 38, panel);
+
+            // VOL- button: (10, 138, 44, 32)
+            (void)mm::gfx::fill_rectangle(frame, 10, 138, 44, 32, selected_row);
+            if (!text(frame, "VOL-", 18, 148, white)) return false;
+
+            // VOL+ button: (width - 54, 138, 44, 32)
+            (void)mm::gfx::fill_rectangle(frame, width - 54, 138, 44, 32, selected_row);
+            if (!text(frame, "VOL+", width - 46, 148, white)) return false;
+
+            // Center Volume text and gauge:
+            const auto vol = midicommander::volume();
+            std::array<char, 64> vol_buf{};
+            std::size_t vlen = 0;
+            append_str(vol_buf, vlen, "VOL: ");
+            append_uint(vol_buf, vlen, vol);
+            append_str(vol_buf, vlen, "%");
+            if (!text(frame, vol_buf.data(), (width - 54) / 2 - 10, 139, accent)) return false;
+
+            // Gauge bar: x = 58, y = 157, width = width - 116, height = 8
+            const unsigned int g_w = width - 116u;
+            (void)mm::gfx::fill_rectangle(frame, 58, 157, g_w, 8, background);
+            if (vol > 0) {
+                const unsigned int bar_w = (g_w * vol) / 100u;
+                (void)mm::gfx::fill_rectangle(frame, 58, 157, bar_w > g_w ? g_w : bar_w, 8, accent);
+            }
+
+            // Status text at y = 177
+            if (!text(frame, status, 6, 177, accent)) return false;
+
+            // Bottom buttons: STOP (width - 84) and INFO (68)
+            const auto stop_btn_y = 194u;
+            (void)mm::gfx::fill_rectangle(frame, 6, stop_btn_y, width - 84, 38, selected_row);
+            if (!text(frame, "STOP", (width - 84) / 2 - 14, stop_btn_y + 13, white)) return false;
+
+            (void)mm::gfx::fill_rectangle(frame, width - 74, stop_btn_y, 68, 38, panel);
+            if (!text(frame, "INFO", width - 74 + 20, stop_btn_y + 13, white)) return false;
+        } else {
+            // Song Info Card: y = 42 to 196
+            (void)mm::gfx::fill_rectangle(frame, 8, 42, width - 16, 154, panel);
+            if (!text(frame, "NOW PLAYING", 16, 50, accent) ||
+                !text(frame, playing_name, 16, 72, white)) return false;
+
+            const auto& info = midicommander::current_info();
+            std::array<char, 64> line{};
+            unsigned int py = 94;
+            constexpr unsigned int pstep = 19;
+
+            if (info.title[0] != '\0') {
+                std::size_t len = 0;
+                append_str(line, len, "Title: ");
+                append_str(line, len, info.title.data());
+                if (!text(frame, line.data(), 16, py, accent)) return false;
+                py += pstep;
+            }
+
+            std::size_t len = 0;
+            append_str(line, len, "SMF ");
+            append_uint(line, len, info.format);
+            append_str(line, len, " | ");
+            append_uint(line, len, info.tracks);
+            append_str(line, len, " trk | ");
+            append_uint(line, len, info.bpm);
+            append_str(line, len, " BPM");
+            if (!text(frame, line.data(), 16, py, dim)) return false;
+            py += pstep;
+
+            len = 0;
+            append_str(line, len, "Length: ");
+            format_duration(line, len, info.duration_s);
+            append_str(line, len, " | ");
+            append_uint(line, len, info.note_count);
+            append_str(line, len, " notes");
+            if (!text(frame, line.data(), 16, py, white)) return false;
+            py += pstep;
+
+            len = 0;
+            append_str(line, len, "PPQ: ");
+            append_uint(line, len, info.division);
+            append_str(line, len, " | 8-Voice Piano");
+            if (!text(frame, line.data(), 16, py, dim)) return false;
+
+            // Volume Control Panel: y = 202 to 246 (height 44)
+            (void)mm::gfx::fill_rectangle(frame, 8, 202, width - 16, 44, panel);
+
+            // VOL- button (x = 12 to 58)
+            (void)mm::gfx::fill_rectangle(frame, 12, 206, 46, 36, selected_row);
+            if (!text(frame, "VOL-", 21, 217, white)) return false;
+
+            // VOL+ button (x = width - 58 to width - 12)
+            (void)mm::gfx::fill_rectangle(frame, width - 58, 206, 46, 36, selected_row);
+            if (!text(frame, "VOL+", width - 49, 217, white)) return false;
+
+            // Center Volume text and gauge (x = 62 to width - 62 = 178)
+            const auto vol = midicommander::volume();
+            std::array<char, 64> vol_buf{};
+            std::size_t vlen = 0;
+            append_str(vol_buf, vlen, "VOL: ");
+            append_uint(vol_buf, vlen, vol);
+            append_str(vol_buf, vlen, "%");
+            if (!text(frame, vol_buf.data(), 89, 210, accent)) return false;
+
+            // Gauge bar: x = 66, y = 230, width = 108, height = 9
+            (void)mm::gfx::fill_rectangle(frame, 66, 230, 108, 9, background);
+            if (vol > 0) {
+                const unsigned int bar_w = (108u * vol) / 100u;
+                (void)mm::gfx::fill_rectangle(frame, 66, 230, bar_w > 108u ? 108u : bar_w, 9, accent);
+            }
+
+            // Bottom buttons: STOP (width 142) and INFO (width 74)
+            const auto stop_btn_y = height - 46;
+            (void)mm::gfx::fill_rectangle(frame, 8, stop_btn_y, width - 96, 38, selected_row);
+            if (!text(frame, "STOP", (width - 96) / 2 - 14, stop_btn_y + 12, white)) return false;
+
+            (void)mm::gfx::fill_rectangle(frame, width - 82, stop_btn_y, 74, 38, panel);
+            if (!text(frame, "INFO", width - 82 + 23, stop_btn_y + 12, white)) return false;
+
+            if (!text(frame, status, 6, height - 68, accent)) return false;
         }
-        const auto controls_y = height - 66;
-        const auto third = width / 3;
-        for (unsigned int i = 0; i < 3; ++i)
-            (void)mm::gfx::fill_rectangle(frame, 5 + i * third, controls_y,
-                                          third - 7, 28, panel);
-        if (!text(frame, "PREV", 11, controls_y + 8, white) ||
-            !text(frame, "NEXT", third + 10, controls_y + 8, white) ||
-            !text(frame, "UP", 2 * third + 12, controls_y + 8, white))
-            return false;
+    } else {
+        if (compact) {
+            (void)mm::gfx::fill_rectangle(frame, width - 66, 26, 61, 22, panel);
+            if (!text(frame, browser.on_sd() ? "TO LFS" : "TO SD", width - 63, 31, white)) return false;
+            if (!text(frame, browser.path(), 6, 31, dim)) return false;
 
-        const auto bottom_y = height - 34;
-        (void)mm::gfx::fill_rectangle(frame, 5, bottom_y, width - 86, 27, selected_row);
-        if (!text(frame, "OPEN / PLAY", (width - 86) / 2 - 37, bottom_y + 8, white))
-            return false;
+            for (unsigned int i = 0; i < browser.page_size(); ++i) {
+                const auto* entry = browser.entry(i);
+                const unsigned int y = 50 + i * 22;
+                (void)mm::gfx::fill_rectangle(frame, 5, y, width - 10, 21,
+                    browser.selected_index() == static_cast<int>(i) ? selected_row : row);
+                if (entry != nullptr) {
+                    if (!text(frame, entry->directory ? "[D]" : "[M]", 7, y + 4,
+                              entry->directory ? accent : dim) ||
+                        !text(frame, entry->name.data(), 36, y + 4, white)) return false;
+                }
+            }
 
-        (void)mm::gfx::fill_rectangle(frame, width - 76, bottom_y, 71, 27, panel);
-        if (!text(frame, "INFO", width - 76 + 21, bottom_y + 8, white))
-            return false;
+            const auto controls_y = 162u;
+            const auto third = width / 3;
+            for (unsigned int i = 0; i < 3; ++i)
+                (void)mm::gfx::fill_rectangle(frame, 4 + i * third, controls_y, third - 6, 24, panel);
+            if (!text(frame, "PREV", 10, controls_y + 6, white) ||
+                !text(frame, "NEXT", third + 10, controls_y + 6, white) ||
+                !text(frame, "UP", 2 * third + 16, controls_y + 6, white))
+                return false;
+
+            if (!text(frame, status, 6, 189, accent)) return false;
+
+            const auto bottom_y = 206u;
+            (void)mm::gfx::fill_rectangle(frame, 5, bottom_y, width - 78, 28, selected_row);
+            if (!text(frame, "OPEN / PLAY", (width - 78) / 2 - 37, bottom_y + 8, white))
+                return false;
+
+            (void)mm::gfx::fill_rectangle(frame, width - 69, bottom_y, 64, 28, panel);
+            if (!text(frame, "INFO", width - 69 + 17, bottom_y + 8, white))
+                return false;
+        } else {
+            (void)mm::gfx::fill_rectangle(frame, width - 71, 38, 66, 29, panel);
+            if (!text(frame, browser.on_sd() ? "TO LFS" : "TO SD", width - 68, 47,
+                      white)) return false;
+            if (!text(frame, browser.path(), 6, 45, dim)) return false;
+
+            for (unsigned int i = 0; i < browser.page_size(); ++i) {
+                const auto* entry = browser.entry(i);
+                const unsigned int y = 73 + i * 25;
+                (void)mm::gfx::fill_rectangle(frame, 5, y, width - 10, 23,
+                    browser.selected_index() == static_cast<int>(i) ? selected_row : row);
+                if (entry != nullptr) {
+                    if (!text(frame, entry->directory ? "[D]" : "[M]", 8, y + 5,
+                              entry->directory ? accent : dim) ||
+                        !text(frame, entry->name.data(), 40, y + 5, white)) return false;
+                }
+            }
+            const auto controls_y = height - 66;
+            const auto third = width / 3;
+            for (unsigned int i = 0; i < 3; ++i)
+                (void)mm::gfx::fill_rectangle(frame, 5 + i * third, controls_y,
+                                              third - 7, 28, panel);
+            if (!text(frame, "PREV", 11, controls_y + 8, white) ||
+                !text(frame, "NEXT", third + 10, controls_y + 8, white) ||
+                !text(frame, "UP", 2 * third + 12, controls_y + 8, white))
+                return false;
+
+            const auto bottom_y = height - 34;
+            (void)mm::gfx::fill_rectangle(frame, 5, bottom_y, width - 86, 27, selected_row);
+            if (!text(frame, "OPEN / PLAY", (width - 86) / 2 - 37, bottom_y + 8, white))
+                return false;
+
+            (void)mm::gfx::fill_rectangle(frame, width - 76, bottom_y, 71, 27, panel);
+            if (!text(frame, "INFO", width - 76 + 21, bottom_y + 8, white))
+                return false;
+
+            if (!text(frame, status, 6, height - 82, accent)) return false;
+        }
     }
-    if (!text(frame, status, 6, height - (playing ? 68 : 82), accent)) return false;
     return mm::gfx::write(display, frame, 0, 0) == Status::Ok &&
            display.refresh(mm::display::Refresh::Full) == Status::Ok;
 }
@@ -642,10 +901,12 @@ int main() {
     const auto panel_geometry = display.geometry();
     const auto touch_geometry = touch.geometry();
     if (panel_geometry.bits_per_pixel != 16 || panel_geometry.width < 220 ||
-        panel_geometry.width > maximum_width || panel_geometry.height < 280 ||
+        panel_geometry.width > maximum_width || panel_geometry.height < 220 ||
         panel_geometry.height > maximum_height || touch_geometry.width == 0 ||
         touch_geometry.height == 0) return 3;
+    const bool compact = panel_geometry.height < 280u;
     Browser browser;
+    browser.set_page_size(compact ? 5 : 6);
     const bool storage_ok = browser.initialize();
     const bool audio_ok = midicommander::initialize();
 
@@ -715,7 +976,8 @@ int main() {
         }
         if (touched && !was_touched) {
             if (showing_info) {
-                if (last_y >= panel_geometry.height - 34) {
+                const auto btn_y = compact ? 200u : panel_geometry.height - 34u;
+                if (last_y >= btn_y) {
                     const auto half = panel_geometry.width / 2;
                     if (last_x < half) {
                         // Left button: STOP (if active) or PLAY (if inactive)
@@ -751,8 +1013,12 @@ int main() {
                     }
                 }
             } else if (midicommander::active()) {
-                if (last_y >= panel_geometry.height - 48) {
-                    if (last_x < panel_geometry.width - 82) {
+                const auto stop_btn_y = compact ? 190u : panel_geometry.height - 48u;
+                const auto split_x = compact ? panel_geometry.width - 76u : panel_geometry.width - 82u;
+                const auto vol_y_top = compact ? 134u : 202u;
+                const auto vol_y_bot = compact ? 174u : 250u;
+                if (last_y >= stop_btn_y) {
+                    if (last_x < split_x) {
                         midicommander::stop();
                         playing_name = "";
                         status = "Stopped";
@@ -765,19 +1031,24 @@ int main() {
                                    browser, status, true, playing_name,
                                    showing_info, info_name.data(), info_path.data());
                     }
-                } else if (last_y >= 202 && last_y < 250) {
+                } else if (last_y >= vol_y_top && last_y < vol_y_bot) {
                     unsigned int current = midicommander::volume();
-                    if (last_x < 60) {
+                    const auto vol_btn_w = compact ? 54u : 60u;
+                    if (last_x < vol_btn_w) {
                         if (current >= 10) current -= 10;
                         else current = 0;
-                    } else if (last_x >= panel_geometry.width - 60) {
+                    } else if (last_x >= panel_geometry.width - vol_btn_w) {
                         if (current <= 90) current += 10;
                         else current = 100;
-                    } else if (last_x >= 66 && last_x < 174) {
-                        int pct = static_cast<int>((last_x - 66) * 100 / 108);
-                        if (pct < 0) pct = 0;
-                        if (pct > 100) pct = 100;
-                        current = static_cast<unsigned int>(((pct + 5) / 10) * 10);
+                    } else {
+                        const unsigned int bar_start = compact ? 58u : 66u;
+                        const unsigned int bar_w = compact ? (panel_geometry.width - 116u) : 108u;
+                        if (last_x >= bar_start && last_x < bar_start + bar_w) {
+                            int pct = static_cast<int>((last_x - bar_start) * 100 / bar_w);
+                            if (pct < 0) pct = 0;
+                            if (pct > 100) pct = 100;
+                            current = static_cast<unsigned int>(((pct + 5) / 10) * 10);
+                        }
                     }
                     midicommander::set_volume(current);
                     (void)midicommander::service();
@@ -785,15 +1056,18 @@ int main() {
                                browser, status, true, playing_name,
                                showing_info, info_name.data(), info_path.data());
                 }
-            } else if (last_y >= 38 && last_y < 67 &&
-                       last_x >= panel_geometry.width - 71) {
+            } else if (last_y >= (compact ? 24u : 38u) && last_y < (compact ? 49u : 67u) &&
+                       last_x >= panel_geometry.width - (compact ? 68u : 71u)) {
                 status = browser.switch_source() ? "Source changed" :
                                                     browser.source_error();
                 (void)draw(display, panel_geometry.width, panel_geometry.height,
                            browser, status, false, playing_name,
                            showing_info, info_name.data(), info_path.data());
-            } else if (last_y >= 73 && last_y < 73 + page_size * 25) {
-                const auto tapped_row = (last_y - 73) / 25;
+            } else if (last_y >= (compact ? 50u : 73u) &&
+                       last_y < (compact ? 50u + browser.page_size() * 22u : 73u + browser.page_size() * 25u)) {
+                const auto row_h = compact ? 22u : 25u;
+                const auto row_top = compact ? 50u : 73u;
+                const auto tapped_row = (last_y - row_top) / row_h;
                 if (browser.selected_index() == static_cast<int>(tapped_row)) {
                     // Double tap: open folder or play file
                     const auto* entry = browser.selected();
@@ -833,8 +1107,8 @@ int main() {
                                browser, status, false, playing_name,
                                showing_info, info_name.data(), info_path.data());
                 }
-            } else if (last_y >= panel_geometry.height - 66 &&
-                       last_y < panel_geometry.height - 38) {
+            } else if (last_y >= (compact ? 160u : panel_geometry.height - 66u) &&
+                       last_y < (compact ? 188u : panel_geometry.height - 38u)) {
                 const auto third = panel_geometry.width / 3;
                 bool changed = false;
                 if (last_x < third) changed = browser.previous_page();
@@ -846,8 +1120,9 @@ int main() {
                                false, playing_name,
                                showing_info, info_name.data(), info_path.data());
                 }
-            } else if (last_y >= panel_geometry.height - 34) {
-                if (last_x < panel_geometry.width - 76) {
+            } else if (last_y >= (compact ? 202u : panel_geometry.height - 34u)) {
+                const auto bot_split = compact ? panel_geometry.width - 74u : panel_geometry.width - 76u;
+                if (last_x < bot_split) {
                     // OPEN / PLAY
                     const auto* entry = browser.selected();
                     if (entry != nullptr && entry->directory) {
