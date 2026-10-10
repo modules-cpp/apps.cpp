@@ -1,0 +1,20 @@
+# GPIOCommander's four tabs, for scripts/capture-screens.sh. Coordinates are
+# for a 240 by 320 panel (MM_SDL_DISPLAY_SIZE=240x320): the tab bar is the top
+# 28 pixels, four tabs wide. Each tap redraws before its release; the wait
+# after it outlasts the app's 35 ms touch debounce, so the next tap is a new
+# press rather than a continued hold.
+wait-ms 300            # one PINS refresh of live values
+shot pins
+tap 90 10              # PIN
+wait-ms 60
+shot pin
+tap 150 10             # SCOPE
+wait-ms 60
+shot scope
+tap 210 10             # LOGIC
+wait-ms 60
+shot logic
+tap 100 300            # RUN, the third of six buttons
+wait-ms 300
+shot logic-run
+exit

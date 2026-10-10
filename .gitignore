@@ -69,3 +69,6 @@ Testing/
 
 # modules
 out*
+
+# screens
+screens/

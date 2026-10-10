@@ -1,0 +1,14 @@
+# kalkulator: the keypad, then 7 * 6 = 42, for scripts/capture-screens.sh.
+# Key centres on a 240 by 320 panel: columns x 33 90 147 204, rows y 109 154
+# 199 244 289. A wait after each tap outlasts the app's touch debounce.
+shot keypad
+tap 33 154             # 7
+wait-ms 60
+tap 204 154            # *
+wait-ms 60
+tap 147 199            # 6
+wait-ms 60
+tap 175 289            # =
+wait-ms 60
+shot result
+exit

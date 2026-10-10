@@ -45,6 +45,21 @@ GPIOCommander shows and configures the chip's GPIOs, with an ADC
 oscilloscope and a four-lane logic analyzer; see `GPIOCommander/README.md`
 for the pins it reserves on each board.
 
+## Capture screens on Linux
+
+With the tree configured for Linux SDL and an app built, write a touch script
+beside the app as `screens.touch` and run:
+
+```sh
+./scripts/capture-screens.sh GPIOCommander            # 240x320 by default
+./scripts/capture-screens.sh kalkulator 240x320
+```
+
+The app runs headless (SDL's offscreen driver), replays the script's taps, and
+writes each `shot NAME` step to `<app>/screens/NAME.ppm`, and `NAME.png` when
+ImageMagick is installed. GPIOCommander and kalkulator carry scripts; the
+script grammar is in modules.cpp's platforms/linux/sdl2/provider/mm.mdy.
+
 ## Build and run fractals on Linux
 
 From this repository's `fractals/` directory:
